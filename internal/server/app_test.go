@@ -1,8 +1,12 @@
 package server
 
 import (
+	"bytes"
+	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -10,12 +14,54 @@ import (
 	"testing"
 )
 
+func TestBodyLimitUsesPublicError(t *testing.T) {
+	dist := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dist, "index.html"), []byte("ok"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	app, err := New(Config{WebDistDir: dist, DataDir: t.TempDir(), MaxUploadMB: 1}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Shutdown()
+	go func() { _ = app.Listener(listener) }()
+	req, err := http.NewRequest("POST", "http://"+listener.Addr().String()+"/api/assets/audio", bytes.NewReader(bytes.Repeat([]byte{'x'}, 1024*1024+1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=x")
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != 413 || body.Error.Code != "UPLOAD_TOO_LARGE" {
+		t.Fatalf("status=%d error=%+v", response.StatusCode, body.Error)
+	}
+	if _, err := New(Config{WebDistDir: dist, DataDir: t.TempDir(), MaxUploadMB: int(^uint(0) >> 1)}, logger); err == nil {
+		t.Fatal("overflowing upload limit accepted")
+	}
+}
+
 func TestStaticPageAndSPAFallback(t *testing.T) {
 	dist := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dist, "index.html"), []byte("<h1>ClipWeaver</h1>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	app, err := New(Config{WebDistDir: dist, MaxUploadMB: 1}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	app, err := New(Config{WebDistDir: dist, DataDir: t.TempDir(), MaxUploadMB: 1}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}

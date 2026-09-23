@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -130,6 +131,75 @@ func (s *Local) newStaging(kind string) (string, string, error) {
 		return "", "", err
 	}
 	return id, path, nil
+}
+
+// PromoteUpload atomically moves a completed upload into its final asset directory.
+func (s *Local) PromoteUpload(uploadID, assetID string) error {
+	uploadID, err := canonicalID(uploadID)
+	if err != nil {
+		return err
+	}
+	_, finalDir, err := s.assetDir(assetID)
+	if err != nil {
+		return err
+	}
+	stageDir := filepath.Join(s.root, "tmp", "uploads", uploadID)
+	if info, err := os.Lstat(stageDir); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("invalid upload staging: %v", err)
+	}
+	if _, err := os.Lstat(finalDir); err == nil {
+		return fmt.Errorf("asset directory already exists")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return os.Rename(stageDir, finalDir)
+}
+
+func (s *Local) RemoveUploadStaging(id string) error {
+	id, err := canonicalID(id)
+	if err != nil {
+		return err
+	}
+	return os.RemoveAll(filepath.Join(s.root, "tmp", "uploads", id))
+}
+
+func (s *Local) RemoveAsset(id string) error {
+	_, dir, err := s.assetDir(id)
+	if err != nil {
+		return err
+	}
+	return os.RemoveAll(dir)
+}
+
+// ListAssets reads committed manifests from disk in stable ID order.
+func (s *Local) ListAssets() ([]domain.Asset, error) {
+	entries, err := os.ReadDir(filepath.Join(s.root, "assets"))
+	if err != nil {
+		return nil, err
+	}
+	assets := make([]domain.Asset, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		id := entry.Name()
+		manifest := filepath.Join(s.root, "assets", id, "meta.json")
+		if _, err := os.Lstat(manifest); errors.Is(err, os.ErrNotExist) {
+			continue // Promotion not yet committed by SaveAsset.
+		} else if err != nil {
+			return nil, err
+		}
+		asset, err := s.ReadAsset(id)
+		if err != nil {
+			return nil, err
+		}
+		if info, err := os.Lstat(asset.StoredPath); err != nil || !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("invalid asset source %s: %v", id, err)
+		}
+		assets = append(assets, asset)
+	}
+	sort.Slice(assets, func(i, j int) bool { return assets[i].ID < assets[j].ID })
+	return assets, nil
 }
 
 type assetManifest struct {

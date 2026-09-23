@@ -51,7 +51,7 @@
 ## 验收证据
 
 - 修改文件：`internal/media/ffprobe.go`、`ffprobe_test.go`、`testdata/*.json`；`internal/storage/local.go`、`local_test.go`；本任务状态和本节证据。
-- Commit：pending（人工 PASS 前由宿主提交；本次未执行 git add/commit/push）。
+- Commit：484c366d207e429af0404e003322b03514d82a9a（实现提交；2026-09-23 已完成人工 Review 并确认通过）。
 - 测试命令：`gofmt -w internal/media/ffprobe.go internal/media/ffprobe_test.go internal/storage/local.go internal/storage/local_test.go`；`go test ./internal/media/... ./internal/storage/... -count=1`；`go test ./internal/domain/... ./internal/media/... ./internal/storage/... -count=1`；`go test ./... -count=1`。GOCACHE 指向临时可写目录。
 - 测试结果：gofmt 完成；两条定向 go test 均 PASS；`go test ./... -count=1` exit 1，仅既有 `internal/server.TestStaticPageAndSPAFallback` 在 Windows `TempDir` 清理 `index.html` 时因文件被占用失败，未改动该模块。
 - FFprobe fixture/关键输出：`video_default.json` 选 default video index=3、3003000us、1920x1080；`video_lowest.json` 无 default 选 index=2；`audio_mixed.json` 忽略 video/subtitle，选 default audio index=4；`missing_video.json`、`missing_audio.json`、`invalid_duration.json`、`invalid_json.json` 验证稳定错误。命令 runner 测试覆盖参数、超时、取消及进程失败；宿主真实 FFprobe 未运行。

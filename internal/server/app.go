@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -11,15 +12,28 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/requestid"
+	"github.com/lifei6671/clipweaver/internal/httpapi"
+	"github.com/lifei6671/clipweaver/internal/media"
+	"github.com/lifei6671/clipweaver/internal/service"
+	"github.com/lifei6671/clipweaver/internal/storage"
 )
 
 func New(cfg Config, logger *slog.Logger) (*fiber.App, error) {
+	if cfg.MaxUploadMB <= 0 || cfg.MaxUploadMB > int(^uint(0)>>1)/(1024*1024) {
+		return nil, fmt.Errorf("MAX_UPLOAD_MB is out of range")
+	}
 	if _, err := os.Stat(filepath.Join(cfg.WebDistDir, "index.html")); err != nil {
 		return nil, err
 	}
+	store, err := storage.NewLocal(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	assets := service.NewAssetService(store, media.NewProber("", 0))
 	app := fiber.New(fiber.Config{
 		DisableStartupMessage: true,
 		BodyLimit:             cfg.MaxUploadMB * 1024 * 1024,
+		ErrorHandler:          httpapi.ErrorHandler(logger),
 	})
 	app.Use(requestid.New())
 	app.Use(func(c *fiber.Ctx) error {
@@ -51,6 +65,7 @@ func New(cfg Config, logger *slog.Logger) (*fiber.App, error) {
 			"ffprobe": fiber.Map{"available": true, "version": ffprobeVersion},
 		})
 	})
+	httpapi.Register(app, assets, logger)
 	app.Static("/assets", filepath.Join(cfg.WebDistDir, "assets"))
 	app.Get("/*", func(c *fiber.Ctx) error {
 		if strings.HasPrefix(c.Path(), "/api/") || filepath.Ext(c.Path()) != "" {
