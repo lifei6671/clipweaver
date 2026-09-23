@@ -36,15 +36,15 @@
 
 ## 验收条件
 
-- [ ] 同一视频所有已用区间均不重叠。
-- [ ] 同一 AssetID 能在一条 MixPlan 中贡献多个不同 clip。
-- [ ] 目标时长 7 秒、固定片长 3 秒时，规划总时长严格为 7 秒，并发生末片截短。
-- [ ] 任意成功计划满足 `sum(DurationUS) == TargetDurationUS`。
-- [ ] 所有 clip 满足 `DurationUS > 0` 且落在源视频时长范围内。
-- [ ] 素材不足时返回 `INSUFFICIENT_VIDEO_DURATION`，不得循环复用候选片段。
-- [ ] 相同输入和 seed 连续规划结果完全一致。
-- [ ] DifferentSeed 测试使用候选数 >= 2 的固定输入和预先验证的 seed 对，不含概率性偶发失败。
-- [ ] `go test ./internal/mixer/... -count=1` 通过，并由后续 Docker builder 全量测试再次覆盖。
+- [x] 同一视频所有已用区间均不重叠。
+- [x] 同一 AssetID 能在一条 MixPlan 中贡献多个不同 clip。
+- [x] 目标时长 7 秒、固定片长 3 秒时，规划总时长严格为 7 秒，并发生末片截短。
+- [x] 任意成功计划满足 `sum(DurationUS) == TargetDurationUS`。
+- [x] 所有 clip 满足 `DurationUS > 0` 且落在源视频时长范围内。
+- [x] 素材不足时返回 `INSUFFICIENT_VIDEO_DURATION`，不得循环复用候选片段。
+- [x] 相同输入和 seed 连续规划结果完全一致。
+- [x] DifferentSeed 测试使用候选数 >= 2 的固定输入和预先验证的 seed 对，不含概率性偶发失败。
+- [x] `go test ./internal/mixer/... -count=1` 通过，并由后续 Docker builder 全量测试再次覆盖。
 
 ## 必须存在的测试
 
@@ -59,7 +59,7 @@
 ## 验收证据
 
 - 修改文件：`internal/domain/asset.go`、`internal/domain/mix.go`、`internal/mixer/planner.go`、`internal/mixer/planner_test.go`、`docs/tasks/README.md`、`docs/tasks/TASK-002.md`。
-- Commit：pending（本任务不提交、不推送）。
+- Commit：624fcd705c3c74a3118e87134609fd8acc7790e8（实现提交；2026-09-23 已完成人工 Review 并确认通过）。
 - 实际命令与结果：首次运行两条定向 `go test` 时，默认 `GOCACHE` 返回 Access is denied（exit 1）；改指向可写临时目录后在 Windows 宿主重跑：
   - `gofmt -w internal/domain/asset.go internal/domain/mix.go internal/mixer/planner.go internal/mixer/planner_test.go`：PASS，exit 0。
   - `go test ./internal/mixer/... -count=1`：PASS，exit 0。

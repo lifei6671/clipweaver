@@ -1,0 +1,1 @@
+{"streams":[{"index":0,"codec_type":"video","duration":"20","width":100,"height":100},{"index":9,"codec_type":"audio","duration":"9","disposition":{"default":0}},{"index":4,"codec_type":"audio","duration_ts":"440999","time_base":"1/100000","duration":"50","disposition":{"default":1}},{"index":2,"codec_type":"subtitle","duration":"30"}],"format":{"duration":"70"}}

@@ -56,7 +56,7 @@
 - 开发顺序决策（2026-09-23）：人工确认先继续业务代码开发，Docker 调试统一后置；本任务继续保持 `BLOCKED`，未通过项不得视为通过。按任务索引中的开发期例外，TASK-002～TASK-008 可先推进；TASK-009 开始前必须补齐本任务全部 Docker 验收并标记 `PASS`。
 
 - 修改文件：go.mod、go.sum、cmd/server/main.go、internal/server/{app,config}.go 及测试、web/ 的 React/TypeScript/Vite/Ant Design 源码与 pnpm-lock.yaml、Dockerfile、docker-compose.yml、.dockerignore、.gitignore、README.md、docs/tasks/README.md、本任务卡。
-- Commit：pending（按本次执行要求不提交）。
+- Commit：624fcd705c3c74a3118e87134609fd8acc7790e8（实现与 TASK-002 同批基线提交；本任务状态仍为 BLOCKED，Docker 验收尚未完成）。
 - 依赖锁文件生成：go mod tidy 退出码 0；corepack pnpm install --lockfile-only --ignore-scripts 退出码 0，使用 pnpm 10.17.1。两项仅用于生成锁文件，不计为 Linux 测试。
 - Compose 配置：docker compose config 退出码 0；CLI 同时提示宿主 Docker config.json 无访问权限。
 - Docker build：docker compose build --no-cache 退出码 1；拉取镜像前报 error listing credentials - A specified logon session does not exist。此前 docker version --format '{{.Server.Version}}' 退出码 1，npipe:////./pipe/docker_engine 不存在；常见路径未找到 Docker Desktop 可执行文件。

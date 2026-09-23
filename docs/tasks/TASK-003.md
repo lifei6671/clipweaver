@@ -3,7 +3,7 @@
 - 状态：以 [任务索引](README.md) 为准
 - 需求基线：[requirements-baseline.md](../requirements-baseline.md)，不可削弱
 - 需求基线：[requirements-baseline.md](../requirements-baseline.md)，不可削弱
-- 依赖：TASK-001
+- 依赖：TASK-001（按任务索引中的“开发期 Docker 验收延期例外”允许先行开发；TASK-001 最终仍须补验并 PASS）
 - 可并行：可与 TASK-002 并行
 - 目标：建立安全的本地资源存储、确定的 stream 选择规则和微秒级媒体时长探测能力。
 
@@ -37,22 +37,25 @@
 
 ## 验收条件
 
-- [ ] 有效视频可解析选定 stream 的时长、宽高。
-- [ ] 有效音频可解析选定 audio stream 的真实时长。
-- [ ] 多路 stream fixture 能验证 default/index 选择规则。
-- [ ] `duration_ts + time_base`、`stream.duration`、`format.duration` 三层 fallback 均有测试。
-- [ ] 微秒转换有边界测试并证明使用 round-to-nearest。
-- [ ] 缺少所需媒体流、duration 非法、FFprobe 失败均返回明确错误。
-- [ ] manifest 原子写入并可重新读取。
-- [ ] 模拟应用重启后仍能读取既有资产，并清理孤儿 tmp。
-- [ ] 危险原始文件名和非法 UUID 不能越出数据目录。
-- [ ] `go test ./internal/media/... ./internal/storage/... -count=1` 通过。
+- [x] 有效视频可解析选定 stream 的时长、宽高。
+- [x] 有效音频可解析选定 audio stream 的真实时长。
+- [x] 多路 stream fixture 能验证 default/index 选择规则。
+- [x] `duration_ts + time_base`、`stream.duration`、`format.duration` 三层 fallback 均有测试。
+- [x] 微秒转换有边界测试并证明使用 round-to-nearest。
+- [x] 缺少所需媒体流、duration 非法、FFprobe 失败均返回明确错误。
+- [x] manifest 原子写入并可重新读取。
+- [x] 模拟应用重启后仍能读取既有资产，并清理孤儿 tmp。
+- [x] 危险原始文件名和非法 UUID 不能越出数据目录。
+- [x] `go test ./internal/media/... ./internal/storage/... -count=1` 通过。
 
 ## 验收证据
 
-- Commit：
-- 测试命令：
-- 测试结果：
-- FFprobe fixture/关键输出：
-- duration fallback/rounding：
-- tmp 恢复清理：
+- 修改文件：`internal/media/ffprobe.go`、`ffprobe_test.go`、`testdata/*.json`；`internal/storage/local.go`、`local_test.go`；本任务状态和本节证据。
+- Commit：pending（人工 PASS 前由宿主提交；本次未执行 git add/commit/push）。
+- 测试命令：`gofmt -w internal/media/ffprobe.go internal/media/ffprobe_test.go internal/storage/local.go internal/storage/local_test.go`；`go test ./internal/media/... ./internal/storage/... -count=1`；`go test ./internal/domain/... ./internal/media/... ./internal/storage/... -count=1`；`go test ./... -count=1`。GOCACHE 指向临时可写目录。
+- 测试结果：gofmt 完成；两条定向 go test 均 PASS；`go test ./... -count=1` exit 1，仅既有 `internal/server.TestStaticPageAndSPAFallback` 在 Windows `TempDir` 清理 `index.html` 时因文件被占用失败，未改动该模块。
+- FFprobe fixture/关键输出：`video_default.json` 选 default video index=3、3003000us、1920x1080；`video_lowest.json` 无 default 选 index=2；`audio_mixed.json` 忽略 video/subtitle，选 default audio index=4；`missing_video.json`、`missing_audio.json`、`invalid_duration.json`、`invalid_json.json` 验证稳定错误。命令 runner 测试覆盖参数、超时、取消及进程失败；宿主真实 FFprobe 未运行。
+- duration fallback/rounding：`video_default.json` 和 `audio_mixed.json` 验证 duration_ts/time_base 优先；`stream_fallback.json`、`format_fallback.json` 验证逐层回退。`math/big.Rat` 精确计算，0.4/0.5/0.6us 分别舍入为 0/1/1；正好半微秒向上，溢出及舍入为 0 的候选值继续回退。
+- tmp 恢复清理：重建 `NewLocal(root)` 后 manifest 可读，`tmp/uploads/*` 与 `tmp/mixes/*` 孤儿目录被清除，两个根目录保留。manifest 通过同目录临时文件、Sync/Close/Rename 更新，持久化内容无 `StoredPath`；读取时从 root + UUID 重建。
+- SELF_REVIEW：修复 stream `default` 仅精确等于 1 的选择分支，以及亚微秒/溢出候选值阻断 fallback 的问题；定向测试重跑 PASS。UUID 和固定 `source.bin` 阻断外部路径拼接；已有 asset/source/manifest 符号链接由 `Lstat` 拒绝。Windows 沙箱无创建 symlink 权限，该专项测试 SKIP；本地数据目录需由应用独占管理，未验证并发恶意目录替换。
+- Docker builder/Linux 验证：后置于 TASK-001 宿主人工验收，本任务未执行；不进入 TASK-004。
