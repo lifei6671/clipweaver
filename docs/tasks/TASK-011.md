@@ -61,7 +61,7 @@
 - [x] README 中所有面向验收人的命令按顺序实际执行成功。
 - [x] AI-NOTES 至少包含 2 个真实案例及证据引用。
 - [x] `git status` 不包含应提交但遗漏的源码/文档，也不包含本机缓存、秘密或普通运行期媒体二进制；显式 `demo/` 交付资产除外。
-- [ ] docs/tasks 中所有任务均有最终状态和验收证据。
+- [x] docs/tasks 中所有任务均有最终状态和验收证据。
 - [x] README 的已知限制与最终实现一致。
 - [x] README 能直接定位实际无字幕示例成片（仓库 `demo/` 路径或可访问下载链接）。
 
@@ -77,3 +77,4 @@
 - README clean-room 验证：按已提交 README 分别执行 `build --no-cache`、`up --build -d`、`ps`、容器内 fixture/E2E、`logs --tail=50 app`、`down`、`up -d`，均退出 0；`down` 后 named volume 未删除，重新 `up -d` 后容器再次 healthy，`GET /api/assets` 仍能读取先前上传资产。浏览器刷新后 assets 恢复，选中状态及上次 mix 结果展示不恢复，与 README 已知限制一致。初次容器日志已保存在本机 `%TEMP%/clipweaver-task011-clean-app.log`。
 - AI-NOTES 案例：上传 BodyLimit 测试客户端时序（`TestBodyLimitUsesPublicError`、提交 `62abe001`）；长口播音轨缺尾与 video-finalize/simple mux（提交 `19f97e4`、TASK-005）；rotation fixture metadata 与像素方向验证（TASK-010、提交 `9696f87`）。均写明方案来源、调整与验证依据。
 - 最终 Git status：clean-room 完成时仅有用户要求本阶段不处理的原始题目 PDF 为 untracked；本次 README/任务证据提交后也只保留该用户文件。仓库未跟踪普通运行期 fixture/output、缓存或密钥；明确的 `demo/` 成片与用户允许分发的 `material/` 是交付资产。唯一未勾选项待 TASK-011 人工 Review 后更新最终状态。
+- 最终收口（2026-09-23）：用户确认 TASK-011 人工 Review 通过；README、AI-NOTES 的准备提交为 `9afce5fa6e2234661fac849db17584ae948bb004`，clean-room 验收证据提交为 `a8ccaa3f8a4066cac2fe4c8c97c58a6e636e2087`。全部验收条件已满足，TASK-011 状态为 `PASS`；前述 `REVIEW` 与未勾选项保留为人工复核前的历史记录。

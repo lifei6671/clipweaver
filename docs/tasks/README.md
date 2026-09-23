@@ -70,6 +70,10 @@ TODO → IN_PROGRESS → REVIEW → PASS
 
 - TASK-011：README、AI-NOTES 已先以 `9afce5fa6e2234661fac849db17584ae948bb004` 提交；在独立空 volume 中按已提交 README 完成 Docker 无缓存构建、容器内 E2E 与真实浏览器上传、失败重做、播放到结尾、下载落盘。详细证据见任务卡。最终证据文档已记录，待人工 Review，当前 `REVIEW`；此前“仍为 TODO”是 TASK-010 刚通过时的历史状态。
 
+### 2026-09-23 TASK-011 人工 Review 后的最终状态
+
+- TASK-011：用户确认人工 Review 通过；README、AI-NOTES 与 clean-room 验收证据分别见提交 `9afce5fa6e2234661fac849db17584ae948bb004`、`a8ccaa3f8a4066cac2fe4c8c97c58a6e636e2087`。全部任务卡验收项已满足，当前 `PASS`。上方 `REVIEW` 是复核前的历史状态。
+
 ## 状态总表
 
 | ID | 任务 | 依赖 | 状态 |
@@ -84,7 +88,7 @@ TODO → IN_PROGRESS → REVIEW → PASS
 | [TASK-008](TASK-008.md) | 前端混剪、预览与下载流程 | TASK-006, TASK-007 | PASS |
 | [TASK-009](TASK-009.md) | Docker 交付与运行配置 | TASK-006, TASK-008 | PASS |
 | [TASK-010](TASK-010.md) | 可复现测试素材与 Docker E2E | TASK-009 | PASS |
-| [TASK-011](TASK-011.md) | README、AI 协作记录与最终交付 | TASK-010 | REVIEW |
+| [TASK-011](TASK-011.md) | README、AI 协作记录与最终交付 | TASK-010 | PASS |
 
 ## 推荐推进顺序
 
