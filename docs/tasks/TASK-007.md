@@ -35,20 +35,23 @@
 
 ## 验收条件
 
-- [ ] 可一次选择并上传多个视频。
-- [ ] 各文件有独立 uploading / ready / failed 状态，并能正确展示部分成功响应。
-- [ ] 成功视频显示服务端返回的真实时长。
-- [ ] 用户可以选择参与混剪的视频。
-- [ ] 多个 audio asset 存在时页面始终只有一个当前 `selectedAudioId`。
-- [ ] 上传新口播不会要求服务端删除旧资产。
-- [ ] API 错误可读，不展示原始后端堆栈。
-- [ ] 刷新页面后已有 assets 可恢复。
+- [x] 可一次选择并上传多个视频。
+- [x] 各文件有独立 uploading / ready / failed 状态，并能正确展示部分成功响应。
+- [x] 成功视频显示服务端返回的真实时长。
+- [x] 用户可以选择参与混剪的视频。
+- [x] 多个 audio asset 存在时页面始终只有一个当前 `selectedAudioId`。
+- [x] 上传新口播不会要求服务端删除旧资产。
+- [x] API 错误可读，不展示原始后端堆栈。
+- [x] 刷新页面后已有 assets 可恢复。
 - [ ] 前端测试与 build 通过，并由 Docker builder 再次执行。
 
 ## 验收证据
 
-- Commit：
-- 前端测试：
-- Build：
-- 部分成功 UI：
-- Audio 选择语义：
+- Commit：pending。
+- 前端测试：`corepack pnpm test`（cwd=`web`，pnpm 10.17.1），PASS，13/13；覆盖批量单请求、同名映射、部分成功、错误、刷新、音频单选和并发批次。
+- Build：`corepack pnpm build`（cwd=`web`），PASS，`tsc --noEmit` 与 Vite build 完成；Vite 有大于 500 kB 的 chunk 提示。
+- 部分成功 UI：测试断言同批 ready/failed 分别显示，失败项不可选，仅 ready 默认选中；`durationUs` 使用服务端值。
+- Audio 选择语义：测试断言恢复后无默认选中，切换时唯一选中，新上传自动切换且旧项保留，失败不改变旧选择；没有 DELETE 请求。
+
+- 修改文件：`web/src/App.tsx`、`App.test.tsx`、`api.ts`、`types.ts`、`utils/formatDuration.ts`；本任务状态与证据回填在 `docs/tasks/README.md`、`TASK-007.md`。
+- 待验证：Docker builder 再次执行前端测试与 build；真实浏览器与实际媒体文件的交互验收后置。因此组合验收项保持未勾选，状态保持 `REVIEW`。

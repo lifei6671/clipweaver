@@ -56,7 +56,7 @@
 
 ## 验收证据
 
-- Commit：pending（本任务未提交）
+- Commit：3880770183f6654f19bef74cd37bc1ef1cd39b9b（实现提交；2026-09-23 已完成人工代码 Review 并允许继续开发；真实媒体浏览器播放仍后置，故任务状态暂保留 REVIEW）。
 - 关键文件：`internal/service/mix.go`、`internal/httpapi/mixes.go`、`internal/httpapi/errors.go`、`internal/storage/local.go`、`internal/domain/mix.go`、`internal/server/app.go`、`cmd/server/main.go` 及相应测试。
 - API 测试命令：`go test ./internal/service/... ./internal/httpapi/... ./internal/storage/... -count=1 -timeout=60s` PASS；`go test ./internal/domain/... ./internal/mixer/... ./internal/media/... ./internal/service/... ./internal/httpapi/... ./internal/storage/... -count=1 -timeout=60s` PASS；`go test -race ./internal/service/... ./internal/httpapi/... -count=1 -timeout=90s` PASS；相关包 `go vet` PASS。均使用工作区可写 `GOCACHE`。
 - server 接线测试：`go test ./internal/server/... ./cmd/server/... -run 'TestLoadConfig|TestBodyLimitUsesPublicError|TestMixRoutesRegistered' -count=1 -timeout=60s` PASS。
