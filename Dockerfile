@@ -30,6 +30,8 @@ WORKDIR /app
 COPY --from=media-tools /ffmpeg /ffprobe /usr/local/bin/
 COPY --from=go-builder /out/server /app/server
 COPY --from=web-builder /src/web/dist /app/web/dist
+COPY scripts /app/scripts
+RUN chmod 755 /app/scripts/*.sh
 ENV APP_ADDR=:8080 DATA_DIR=/app/data WEB_DIST_DIR=/app/web/dist
 USER clipweaver
 EXPOSE 8080
