@@ -1,6 +1,12 @@
-import type { Asset, AudioUploadItem, VideoUploadItem } from "./types";
+import type { Asset, AudioUploadItem, MixRequest, MixResult, VideoUploadItem } from "./types";
 
 const genericError = "请求失败，请稍后重试";
+const knownErrorCodes = new Set([
+  "UPLOAD_TOO_LARGE", "INVALID_VIDEO", "INVALID_AUDIO", "INVALID_MEDIA", "FFPROBE_FAILED",
+  "INVALID_REQUEST", "INVALID_ID", "INVALID_SEED", "NO_VIDEO_SELECTED", "AUDIO_REQUIRED",
+  "ASSET_NOT_FOUND", "INSUFFICIENT_VIDEO_DURATION", "MIX_BUSY", "MIX_TIMEOUT",
+  "FFMPEG_FAILED", "RENDER_VALIDATION_FAILED", "INTERNAL_ERROR",
+]);
 
 export function errorMessage(code: string): string {
   switch (code) {
@@ -10,7 +16,24 @@ export function errorMessage(code: string): string {
     case "INVALID_MEDIA": return "媒体文件无效";
     case "FFPROBE_FAILED": return "媒体探测失败，请检查文件";
     case "INVALID_REQUEST": return "上传请求无效";
+    case "INVALID_SEED": return "随机种子无效，请输入 int64 十进制整数";
+    case "NO_VIDEO_SELECTED": return "请先选择视频素材";
+    case "AUDIO_REQUIRED": return "请先选择口播音频";
+    case "ASSET_NOT_FOUND": return "所选素材不存在，请刷新后重试";
+    case "INSUFFICIENT_VIDEO_DURATION": return "所选视频素材时长不足";
+    case "MIX_BUSY": return "已有混剪正在制作，请稍后重试";
+    case "MIX_TIMEOUT": return "混剪超时，请重试";
+    case "FFMPEG_FAILED": return "视频渲染失败，请重试";
+    case "RENDER_VALIDATION_FAILED": return "成片校验失败，请重试";
     default: return genericError;
+  }
+}
+
+export class ApiError extends Error {
+  constructor(readonly code: string, readonly details?: { missingDurationUs: number }) {
+    const seconds = details && code === "INSUFFICIENT_VIDEO_DURATION"
+      ? `，还缺少 ${Number((details.missingDurationUs / 1_000_000).toFixed(1))} 秒视频素材` : "";
+    super(`${errorMessage(code)}${seconds}`);
   }
 }
 
@@ -42,8 +65,14 @@ async function request(url: string, init?: RequestInit): Promise<unknown> {
     throw new Error(genericError);
   }
   if (!response.ok) {
-    const code = record(body) && record(body.error) ? body.error.code : null;
-    throw new Error(errorMessage(typeof code === "string" ? code : ""));
+    const error = record(body) && record(body.error) ? body.error : null;
+    const rawCode = error && typeof error.code === "string" ? error.code : "";
+    const code = knownErrorCodes.has(rawCode) ? rawCode : "UNKNOWN_ERROR";
+    const details = error && record(error.details) ? error.details : null;
+    const missing = details?.missingDurationUs;
+    throw new ApiError(code, code === "INSUFFICIENT_VIDEO_DURATION" &&
+      typeof missing === "number" && Number.isSafeInteger(missing) && missing > 0
+      ? { missingDurationUs: missing } : undefined);
   }
   return body;
 }
@@ -84,4 +113,21 @@ export async function uploadAudio(file: File, signal?: AbortSignal): Promise<Aud
     throw new Error(genericError);
   }
   return { filename: body.filename, status: "ready", asset: body.asset };
+}
+
+export async function mixAssets(input: MixRequest, signal?: AbortSignal): Promise<MixResult> {
+  const body = await request("/api/mixes", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+    signal,
+  });
+  if (!record(body) || typeof body.id !== "string" || body.id.length === 0 ||
+      body.status !== "completed" || typeof body.seed !== "string" ||
+      typeof body.durationUs !== "number" || !Number.isSafeInteger(body.durationUs) || body.durationUs <= 0 ||
+      body.previewUrl !== `/api/mixes/${body.id}/file` ||
+      body.downloadUrl !== `/api/mixes/${body.id}/download`) {
+    throw new Error(genericError);
+  }
+  return body as MixResult;
 }

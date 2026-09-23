@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { Alert, Button, Card, Checkbox, ConfigProvider, Radio, Space, Typography, Upload } from "antd";
-import { errorMessage, getAssets, uploadAudio, uploadVideos } from "./api";
-import type { Asset } from "./types";
+import { Alert, Button, Card, Checkbox, ConfigProvider, Input, Radio, Space, Typography, Upload } from "antd";
+import { errorMessage, getAssets, mixAssets, uploadAudio, uploadVideos } from "./api";
+import type { Asset, MixResult } from "./types";
 import { formatDuration } from "./utils/formatDuration";
 
 type VideoRow = {
@@ -25,8 +25,13 @@ export function App() {
   const [selectedAudioId, setSelectedAudioId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [audioUpload, setAudioUpload] = useState<AudioUpload | null>(null);
+  const [seed, setSeed] = useState("");
+  const [mixing, setMixing] = useState(false);
+  const [mixError, setMixError] = useState<string | null>(null);
+  const [mixResult, setMixResult] = useState<MixResult | null>(null);
   const nextKey = useRef(0);
   const audioPending = useRef(false);
+  const mixPending = useRef(false);
   const controllers = useRef(new Set<AbortController>());
 
   useEffect(() => {
@@ -98,6 +103,31 @@ export function App() {
     });
   }
 
+  async function submitMix() {
+    if (mixPending.current) return;
+    const readyIds = new Set(videos.flatMap((row) => row.status === "ready" && row.asset ? [row.asset.id] : []));
+    const videoIds = selectedVideoIds.filter((id) => readyIds.has(id));
+    if (videoIds.length === 0 || !selectedAudioId || !audios.some((item) => item.id === selectedAudioId)) return;
+    mixPending.current = true;
+    setMixing(true);
+    setMixError(null);
+    const controller = new AbortController();
+    controllers.current.add(controller);
+    try {
+      const result = await mixAssets({ videoIds, audioId: selectedAudioId, ...(seed === "" ? {} : { seed }) }, controller.signal);
+      if (!controller.signal.aborted) setMixResult(result);
+    } catch (error) {
+      if (!controller.signal.aborted) setMixError(failure(error));
+    } finally {
+      controllers.current.delete(controller);
+      mixPending.current = false;
+      if (!controller.signal.aborted) setMixing(false);
+    }
+  }
+
+  const canMix = selectedVideoIds.some((id) => videos.some((row) => row.status === "ready" && row.asset?.id === id)) &&
+    selectedAudioId !== null && audios.some((item) => item.id === selectedAudioId);
+
   return (
     <ConfigProvider>
       <main style={{ maxWidth: 760, margin: "40px auto", padding: "0 24px" }}>
@@ -151,6 +181,27 @@ export function App() {
               </li>)}
             </ul>
           </Card>
+          <Card title="混剪操作">
+            <Space direction="vertical" style={{ width: "100%" }}>
+              <label htmlFor="mix-seed">随机种子（可选）</label>
+              <Input id="mix-seed" value={seed} onChange={(event) => setSeed(event.target.value)}
+                placeholder="留空由服务端生成" />
+              <Space>
+                <Button type="primary" disabled={!canMix || mixing} onClick={submitMix}>开始混剪</Button>
+                {mixResult && <Button disabled={!canMix || mixing} onClick={submitMix}>重新制作</Button>}
+              </Space>
+              {mixing && <Typography.Text role="status">制作中</Typography.Text>}
+              {mixError && <Alert type="error" showIcon message={mixError} />}
+            </Space>
+          </Card>
+          {mixResult && <Card title="成片结果">
+            <Space direction="vertical" style={{ width: "100%" }}>
+              <video aria-label="成片预览" controls src={mixResult.previewUrl} style={{ maxWidth: "100%", maxHeight: 480 }} />
+              <Typography.Text>时长：{formatDuration(mixResult.durationUs)}</Typography.Text>
+              <Typography.Text>本次种子：{mixResult.seed}</Typography.Text>
+              <Button href={mixResult.downloadUrl} download>下载 MP4</Button>
+            </Space>
+          </Card>}
         </Space>
       </main>
     </ConfigProvider>

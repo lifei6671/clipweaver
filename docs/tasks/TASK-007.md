@@ -47,7 +47,7 @@
 
 ## 验收证据
 
-- Commit：pending。
+- Commit：566cf5bfe095d3f068d8c324d19b7c62d32c742c（实现提交；2026-09-23 已完成人工代码 Review 并允许继续开发；Docker builder 与真实浏览器/实际媒体交互仍后置，故任务状态暂保留 REVIEW）。
 - 前端测试：`corepack pnpm test`（cwd=`web`，pnpm 10.17.1），PASS，13/13；覆盖批量单请求、同名映射、部分成功、错误、刷新、音频单选和并发批次。
 - Build：`corepack pnpm build`（cwd=`web`），PASS，`tsc --noEmit` 与 Vite build 完成；Vite 有大于 500 kB 的 chunk 提示。
 - 部分成功 UI：测试断言同批 ready/failed 分别显示，失败项不可选，仅 ready 默认选中；`durationUs` 使用服务端值。

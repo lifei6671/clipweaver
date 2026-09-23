@@ -3,7 +3,7 @@
 - 状态：以 [任务索引](README.md) 为准
 - 需求基线：[requirements-baseline.md](../requirements-baseline.md)，不可削弱
 - 需求基线：[requirements-baseline.md](../requirements-baseline.md)，不可削弱
-- 依赖：TASK-006、TASK-007
+- 依赖：TASK-006、TASK-007（按任务索引中的开发期例外，两项均已完成人工代码 Review，真实媒体/Docker 浏览器验收后置，允许本任务先行开发）
 - 可并行：否
 - 目标：完成用户从已选素材发起混剪到预览、下载和失败重试的完整页面流程。
 
@@ -33,19 +33,19 @@
 
 ## 验收条件
 
-- [ ] 没有已选视频或口播时不能提交。
-- [ ] 制作期间无法重复点击创建多个请求。
+- [x] 没有已选视频或口播时不能提交。
+- [x] 制作期间无法重复点击创建多个请求。
 - [ ] 成功后视频可以播放。
-- [ ] 下载按钮请求 downloadUrl。
-- [ ] 失败信息明确可读。
-- [ ] 失败后素材与选择仍保留，可直接重新制作。
-- [ ] 素材不足错误包含缺少时长。
-- [ ] 前端测试与 build 通过。
+- [x] 下载按钮请求 downloadUrl。
+- [x] 失败信息明确可读。
+- [x] 失败后素材与选择仍保留，可直接重新制作。
+- [x] 素材不足错误包含缺少时长。
+- [x] 前端测试与 build 通过。
 
 ## 验收证据
 
-- Commit：
-- 前端测试：
-- Build：
-- 成功流程截图/说明：
-- 失败重试截图/说明：
+- Commit：pending（本任务不执行 git add/commit/push）。
+- 前端测试：`corepack pnpm test`（`web/` 下），31/31 PASS；含 seed 字符串精度、同步防重入、URL/下载语义、错误与重试、并发和卸载 abort。
+- Build：`corepack pnpm build`（`web/` 下），`tsc --noEmit && vite build` PASS；有 bundle size warning。
+- 成功流程截图/说明：jsdom 验证 `<video controls src=previewUrl>`、duration、服务端 seed 和 `downloadUrl` 链接；未用真实 MP4 在浏览器播放，故“成功后视频可以播放”暂不勾选。真实浏览器播放与 Docker builder 复验后置。
+- 失败重试截图/说明：jsdom 验证素材不足缺少 4.7 秒、MIX_BUSY/MIX_TIMEOUT/INVALID_SEED/渲染与网络失败文案；失败保留素材选择及上一次成片，重试成功后替换结果。

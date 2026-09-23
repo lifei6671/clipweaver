@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { App } from "./App";
-import { getAssets, uploadAudio, uploadVideos } from "./api";
+import { ApiError, getAssets, mixAssets, uploadAudio, uploadVideos } from "./api";
 import { formatDuration } from "./utils/formatDuration";
 
 afterEach(() => {
@@ -41,7 +41,7 @@ test("restores assets and server durations without restoring selections", async 
   expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "选择视频 v1.mp4" }).checked).toBe(false);
   expect(screen.getAllByRole<HTMLInputElement>("radio").every((radio) => !radio.checked)).toBe(true);
   expect(fileInput(container, 0).multiple).toBe(true);
-  expect(screen.queryByText("开始混剪")).toBeNull();
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "开始混剪" }).disabled).toBe(true);
   expect(container.querySelector("video")).toBeNull();
   expect(screen.queryByText("下载")).toBeNull();
 });
@@ -234,4 +234,227 @@ test("API uses exact multipart fields and formats fractional duration", async ()
   expect((fetchMock.mock.calls[1][1].body as FormData).getAll("files")).toEqual([v]);
   expect((fetchMock.mock.calls[2][1].body as FormData).getAll("file")).toEqual([a]);
   expect(formatDuration(9_700_000)).toBe("9.7 秒");
+});
+
+const completed = (seed = "9007199254740993") => ({
+  id: "m1", status: "completed", seed, durationUs: 4_500_000,
+  previewUrl: "/api/mixes/m1/file", downloadUrl: "/api/mixes/m1/download",
+});
+
+async function selectMixAssets() {
+  await screen.findByRole("checkbox", { name: "选择视频 v1.mp4" });
+  fireEvent.click(screen.getByRole("checkbox", { name: "选择视频 v1.mp4" }));
+  fireEvent.click(screen.getByRole("radio", { name: "选择口播 a1.m4a" }));
+}
+
+test("mix requires a selected ready video and audio", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({ items: [video("v1"), audio("a1")] })));
+  render(<App />);
+  const start = screen.getByRole<HTMLButtonElement>("button", { name: "开始混剪" });
+  expect(start.disabled).toBe(true);
+  await screen.findByRole("checkbox", { name: "选择视频 v1.mp4" });
+  fireEvent.click(screen.getByRole("checkbox", { name: "选择视频 v1.mp4" }));
+  expect(start.disabled).toBe(true);
+  fireEvent.click(screen.getByRole("checkbox", { name: "选择视频 v1.mp4" }));
+  fireEvent.click(screen.getByRole("radio", { name: "选择口播 a1.m4a" }));
+  expect(start.disabled).toBe(true);
+  fireEvent.click(screen.getByRole("checkbox", { name: "选择视频 v1.mp4" }));
+  expect(start.disabled).toBe(false);
+});
+
+test("pending mix has a synchronous duplicate lock and completes with preview and download", async () => {
+  const pending = deferred<Response>();
+  const fetchMock = vi.fn().mockResolvedValueOnce(json({ items: [video("v1"), audio("a1")] }))
+    .mockImplementationOnce(() => pending.promise);
+  vi.stubGlobal("fetch", fetchMock);
+  render(<App />);
+  await selectMixAssets();
+  fireEvent.change(screen.getByRole("textbox", { name: "随机种子（可选）" }), { target: { value: "9007199254740993" } });
+  const start = screen.getByRole<HTMLButtonElement>("button", { name: "开始混剪" });
+  fireEvent.click(start);
+  fireEvent.click(start);
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(fetchMock.mock.calls[1][0]).toBe("/api/mixes");
+  expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ videoIds: ["v1"], audioId: "a1", seed: "9007199254740993" });
+  expect(start.disabled).toBe(true);
+  expect(screen.getByText("制作中")).toBeTruthy();
+  pending.resolve(json(completed()));
+  const player = await screen.findByLabelText<HTMLVideoElement>("成片预览");
+  expect(player.controls).toBe(true);
+  expect(player.getAttribute("src")).toBe("/api/mixes/m1/file");
+  expect(screen.getByText("本次种子：9007199254740993")).toBeTruthy();
+  expect(screen.getByText("时长：4.5 秒")).toBeTruthy();
+  const link = screen.getByRole<HTMLAnchorElement>("link", { name: "下载 MP4" });
+  expect(link.getAttribute("href")).toBe("/api/mixes/m1/download");
+  expect(link.hasAttribute("download")).toBe(true);
+  expect(screen.queryByText(/任务历史|进度百分比|字幕开关/)).toBeNull();
+});
+
+test("empty seed is omitted on initial and repeat mixes; selection and assets remain", async () => {
+  const fetchMock = vi.fn().mockResolvedValueOnce(json({ items: [video("v1"), audio("a1")] }))
+    .mockResolvedValueOnce(json(completed("123"))).mockResolvedValueOnce(json(completed("456")));
+  vi.stubGlobal("fetch", fetchMock);
+  render(<App />);
+  await selectMixAssets();
+  fireEvent.click(screen.getByRole("button", { name: "开始混剪" }));
+  await screen.findByText("本次种子：123");
+  fireEvent.click(screen.getByRole("button", { name: "重新制作" }));
+  await screen.findByText("本次种子：456");
+  expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ videoIds: ["v1"], audioId: "a1" });
+  expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({ videoIds: ["v1"], audioId: "a1" });
+  expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "选择视频 v1.mp4" }).checked).toBe(true);
+  expect(screen.getByRole<HTMLInputElement>("radio", { name: "选择口播 a1.m4a" }).checked).toBe(true);
+});
+
+test("int64 max seed is sent unchanged", async () => {
+  const fetchMock = vi.fn().mockResolvedValueOnce(json({ items: [video("v1"), audio("a1")] }))
+    .mockResolvedValueOnce(json(completed("9223372036854775807")));
+  vi.stubGlobal("fetch", fetchMock);
+  render(<App />);
+  await selectMixAssets();
+  fireEvent.change(screen.getByRole("textbox", { name: "随机种子（可选）" }), { target: { value: "9223372036854775807" } });
+  fireEvent.click(screen.getByRole("button", { name: "开始混剪" }));
+  await screen.findByText("本次种子：9223372036854775807");
+  expect(JSON.parse(fetchMock.mock.calls[1][1].body).seed).toBe("9223372036854775807");
+});
+
+test.each([
+  ["INSUFFICIENT_VIDEO_DURATION", { missingDurationUs: 4_700_000 }, "还缺少 4.7 秒视频素材"],
+  ["MIX_BUSY", {}, "已有混剪正在制作，请稍后重试"],
+  ["MIX_TIMEOUT", {}, "混剪超时，请重试"],
+  ["INVALID_SEED", {}, "随机种子无效，请输入 int64 十进制整数"],
+  ["FFMPEG_FAILED", {}, "视频渲染失败，请重试"],
+  ["RENDER_VALIDATION_FAILED", {}, "成片校验失败，请重试"],
+])("%s failure is readable and keeps selections for retry", async (code, details, message) => {
+  const fetchMock = vi.fn().mockResolvedValueOnce(json({ items: [video("v1"), audio("a1")] }))
+    .mockResolvedValueOnce(json({ error: { code, message: "raw /private/path", details } }, 422))
+    .mockResolvedValueOnce(json(completed("retry")));
+  vi.stubGlobal("fetch", fetchMock);
+  render(<App />);
+  await selectMixAssets();
+  fireEvent.click(screen.getByRole("button", { name: "开始混剪" }));
+  expect((await screen.findByRole("alert")).textContent).toContain(message);
+  expect(screen.queryByText(/raw|private\/path/)).toBeNull();
+  expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "选择视频 v1.mp4" }).checked).toBe(true);
+  expect(screen.getByRole<HTMLInputElement>("radio", { name: "选择口播 a1.m4a" }).checked).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "开始混剪" }));
+  await screen.findByText("本次种子：retry");
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+test.each(["html", "network"]) ("%s mix failure never shows raw body or stack", async (kind) => {
+  const fetchMock = vi.fn().mockResolvedValueOnce(json({ items: [video("v1"), audio("a1")] }))
+    .mockImplementationOnce(() => kind === "html"
+      ? Promise.resolve(new Response("<html>raw /server/path</html>", { status: 500 }))
+      : Promise.reject(new Error("raw stack /server/path")));
+  vi.stubGlobal("fetch", fetchMock);
+  render(<App />);
+  await selectMixAssets();
+  fireEvent.click(screen.getByRole("button", { name: "开始混剪" }));
+  expect(await screen.findByRole("alert")).toHaveProperty("textContent", kind === "html"
+    ? "请求失败，请稍后重试" : "网络连接失败，请稍后重试");
+  expect(screen.queryByText(/raw|server\/path|<html>/)).toBeNull();
+});
+
+test("mix and upload responses update their own state", async () => {
+  const mixPending = deferred<Response>();
+  const uploadPending = deferred<Response>();
+  const fetchMock = vi.fn().mockResolvedValueOnce(json({ items: [video("v1"), audio("a1")] }))
+    .mockImplementationOnce(() => mixPending.promise).mockImplementationOnce(() => uploadPending.promise);
+  vi.stubGlobal("fetch", fetchMock);
+  const { container } = render(<App />);
+  await selectMixAssets();
+  fireEvent.click(screen.getByRole("button", { name: "开始混剪" }));
+  fireEvent.change(fileInput(container, 0), { target: { files: [new File(["v"], "new.mp4")] } });
+  uploadPending.resolve(json({ items: [{ filename: "new.mp4", status: "ready", asset: video("v2", "new.mp4") }] }));
+  await screen.findByRole("checkbox", { name: "选择视频 new.mp4" });
+  mixPending.resolve(json(completed()));
+  await screen.findByLabelText("成片预览");
+  expect(screen.getByText("已选 2 个视频")).toBeTruthy();
+  expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "选择视频 new.mp4" }).checked).toBe(true);
+});
+
+test("a failed remake keeps the previous result and uses changed selections on retry", async () => {
+  const fetchMock = vi.fn().mockResolvedValueOnce(json({ items: [video("v1"), video("v2"), audio("a1"), audio("a2")] }))
+    .mockResolvedValueOnce(json(completed("first")))
+    .mockResolvedValueOnce(json({ error: { code: "MIX_TIMEOUT" } }, 504))
+    .mockResolvedValueOnce(json(completed("third")));
+  vi.stubGlobal("fetch", fetchMock);
+  render(<App />);
+  await selectMixAssets();
+  fireEvent.click(screen.getByRole("button", { name: "开始混剪" }));
+  await screen.findByText("本次种子：first");
+  fireEvent.click(screen.getByRole("checkbox", { name: "选择视频 v1.mp4" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: "选择视频 v2.mp4" }));
+  fireEvent.click(screen.getByRole("radio", { name: "选择口播 a2.m4a" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "随机种子（可选）" }), { target: { value: "42" } });
+  fireEvent.click(screen.getByRole("button", { name: "重新制作" }));
+  expect(await screen.findByRole("alert")).toHaveProperty("textContent", "混剪超时，请重试");
+  expect(screen.getByText("本次种子：first")).toBeTruthy();
+  expect(screen.getByLabelText("成片预览")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "重新制作" }));
+  await screen.findByText("本次种子：third");
+  expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({ videoIds: ["v2"], audioId: "a2", seed: "42" });
+  expect(JSON.parse(fetchMock.mock.calls[3][1].body)).toEqual({ videoIds: ["v2"], audioId: "a2", seed: "42" });
+  expect(screen.getByRole<HTMLInputElement>("textbox", { name: "随机种子（可选）" }).value).toBe("42");
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+test("late GET during mix does not replace uploaded assets or selections", async () => {
+  const pendingGet = deferred<Response>();
+  const pendingMix = deferred<Response>();
+  const fetchMock = vi.fn().mockImplementationOnce(() => pendingGet.promise)
+    .mockResolvedValueOnce(json({ items: [{ filename: "v1.mp4", status: "ready", asset: video("v1") }] }))
+    .mockResolvedValueOnce(json({ filename: "a1.m4a", status: "ready", asset: audio("a1") }))
+    .mockImplementationOnce(() => pendingMix.promise);
+  vi.stubGlobal("fetch", fetchMock);
+  const { container } = render(<App />);
+  fireEvent.change(fileInput(container, 0), { target: { files: [new File(["v"], "v1.mp4")] } });
+  await screen.findByRole("checkbox", { name: "选择视频 v1.mp4" });
+  fireEvent.change(fileInput(container, 1), { target: { files: [new File(["a"], "a1.m4a")] } });
+  await screen.findByRole("radio", { name: "选择口播 a1.m4a" });
+  fireEvent.click(screen.getByRole("button", { name: "开始混剪" }));
+  pendingGet.resolve(json({ items: [video("v1"), audio("a1"), video("old", "old.mp4")] }));
+  await screen.findByText("old.mp4");
+  pendingMix.resolve(json(completed()));
+  await screen.findByLabelText("成片预览");
+  expect(screen.getAllByText("v1.mp4")).toHaveLength(1);
+  expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "选择视频 v1.mp4" }).checked).toBe(true);
+  expect(screen.getByRole<HTMLInputElement>("radio", { name: "选择口播 a1.m4a" }).checked).toBe(true);
+  expect(JSON.parse(fetchMock.mock.calls[3][1].body)).toEqual({ videoIds: ["v1"], audioId: "a1" });
+});
+
+test("unmount aborts pending mix", async () => {
+  const pending = deferred<Response>();
+  const fetchMock = vi.fn().mockResolvedValueOnce(json({ items: [video("v1"), audio("a1")] }))
+    .mockImplementationOnce(() => pending.promise);
+  vi.stubGlobal("fetch", fetchMock);
+  const { unmount } = render(<App />);
+  await selectMixAssets();
+  fireEvent.click(screen.getByRole("button", { name: "开始混剪" }));
+  const signal = fetchMock.mock.calls[1][1].signal as AbortSignal;
+  unmount();
+  expect(signal.aborted).toBe(true);
+  pending.resolve(json(completed()));
+  await Promise.resolve();
+});
+
+test("mix API rejects malformed successes and does not turn response URLs into HTML", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(json({ ...completed(), previewUrl: "javascript:alert(1)" })));
+  await expect(mixAssets({ videoIds: ["v1"], audioId: "a1" })).rejects.toThrow("请求失败，请稍后重试");
+});
+
+test("mix API exposes only stable error code, message, and missing duration", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(json({ error: {
+    code: "INSUFFICIENT_VIDEO_DURATION", message: "raw /server/path",
+    details: { missingDurationUs: 4_700_000, stack: "raw stack" },
+  } }, 422)));
+  const error: unknown = await mixAssets({ videoIds: ["v1"], audioId: "a1" }).catch((failure: unknown) => failure);
+  expect(error).toBeInstanceOf(ApiError);
+  expect(error).toMatchObject({
+    code: "INSUFFICIENT_VIDEO_DURATION",
+    message: "所选视频素材时长不足，还缺少 4.7 秒视频素材",
+    details: { missingDurationUs: 4_700_000 },
+  } satisfies Partial<ApiError>);
+  expect((error as ApiError).details).toEqual({ missingDurationUs: 4_700_000 });
 });
