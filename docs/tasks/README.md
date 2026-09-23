@@ -44,12 +44,19 @@ TODO → IN_PROGRESS → REVIEW → PASS
 - TASK-007：正式 Docker builder 前端测试/build 与真实浏览器原素材上传、选择、刷新恢复均通过，当前 `PASS`。
 - TASK-008：完整原始口播的浏览器同步混剪因 `ISSUE-REAL-001` 失败；短样本的制作、播放和失败后重做通过，浏览器下载落盘未证实，当前 `BLOCKED`。
 
-### 2026-09-23 video-finalize 回归后的当前状态
+### 2026-09-23 video-finalize 回归后、人工 Review 前的历史状态
 
 - `ISSUE-REAL-001` 的时长与音轨技术缺陷已由当前未提交源码的新 Docker 镜像、完整原始 59.27 秒 MP3、真实 HTTP 成片及独立 FFprobe 四项 ≤100ms 结果关闭；`silent.mp4`、`narration.wav`、`final-video.mp4`、`output.mp4` 均已保留并探测，历史失败记录继续保留在 TASK-005。
 - TASK-005：用户已人工试听确认原 MP3 含真人口播、最后一句完整且成片尾部音乐未截断；全部媒体行为验收项已有证据。当前修复代码仍未提交（Commit：`pending`）、新修改待人工代码 Review，按本索引的 PASS 前提交哈希规则保持 `REVIEW`。
 - TASK-006：完整原口播同步混剪、Range 预览、Edge 播放、attachment 下载及文件哈希一致性均已补验；依赖 TASK-005 未 `PASS`，暂保留 `REVIEW`。
 - TASK-008：完整原口播在 Edge 完成制作、播放至尾部、真实浏览器下载落盘、素材不足后不重传重做；依赖 TASK-006 未 `PASS` 且本任务提交仍为 `pending`，由 `BLOCKED` 转 `REVIEW`。TASK-009 的前置门禁仍未满足，不开始该任务。
+
+### 2026-09-23 人工 Review 与提交后的当前状态
+
+- 用户确认媒体流水线修复的人工代码 Review 通过；修复及真实媒体证据已由提交 `19f97e4d4a41480aa4e5b07280cc38ebc5277adc` 收录。历史最终验收报告由提交 `0536243fe0de6a90461fa7107bfa945c903247e4` 收录，保留为当时快照。
+- TASK-005：真实原 MP3 的四项时长误差均 ≤100ms，用户人工确认真人口播最后一句完整，全部验收项通过；状态 `PASS`。
+- TASK-006：完整原口播的 API、浏览器预览、Range、下载及失败后重试均通过；TASK-005 已 `PASS`，状态 `PASS`。
+- TASK-008：完整原口播的浏览器制作、播放至尾部、下载落盘及失败后重做均通过；前端实现提交 `dacc3530d25e148b90cde64c74333e7bdbf42b05`，补充证据提交 `19f97e4d4a41480aa4e5b07280cc38ebc5277adc`，依赖均已 `PASS`，状态 `PASS`。TASK-009 前置门禁已满足，任务本身仍为 `TODO`。
 
 ## 状态总表
 
@@ -59,11 +66,11 @@ TODO → IN_PROGRESS → REVIEW → PASS
 | [TASK-002](TASK-002.md) | 领域模型与确定性 Mix Planner | TASK-001 | PASS |
 | [TASK-003](TASK-003.md) | 本地存储与 FFprobe 媒体探测 | TASK-001 | PASS |
 | [TASK-004](TASK-004.md) | 素材上传与查询 API | TASK-003 | PASS |
-| [TASK-005](TASK-005.md) | FFmpeg 渲染执行器与输出验收 | TASK-002, TASK-003 | REVIEW |
-| [TASK-006](TASK-006.md) | Mix 编排服务与 HTTP API | TASK-002, TASK-004, TASK-005 | REVIEW |
+| [TASK-005](TASK-005.md) | FFmpeg 渲染执行器与输出验收 | TASK-002, TASK-003 | PASS |
+| [TASK-006](TASK-006.md) | Mix 编排服务与 HTTP API | TASK-002, TASK-004, TASK-005 | PASS |
 | [TASK-007](TASK-007.md) | 前端素材上传与选择流程 | TASK-004 | PASS |
-| [TASK-008](TASK-008.md) | 前端混剪、预览与下载流程 | TASK-006, TASK-007 | REVIEW |
-| [TASK-009](TASK-009.md) | Docker 交付与运行配置 | TASK-006, TASK-008 | TODO |
+| [TASK-008](TASK-008.md) | 前端混剪、预览与下载流程 | TASK-006, TASK-007 | PASS |
+| [TASK-009](TASK-009.md) | Docker 交付与运行配置 | TASK-006, TASK-008 | REVIEW |
 | [TASK-010](TASK-010.md) | 可复现测试素材与 Docker E2E | TASK-009 | TODO |
 | [TASK-011](TASK-011.md) | README、AI 协作记录与最终交付 | TASK-010 | TODO |
 

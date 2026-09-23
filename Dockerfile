@@ -7,16 +7,17 @@ COPY web ./web
 RUN pnpm --dir web test
 RUN pnpm --dir web build
 
+FROM mwader/static-ffmpeg:7.1.1 AS media-tools
+
 FROM golang:1.25.14-bookworm AS go-builder
 WORKDIR /src
+COPY --from=media-tools /ffmpeg /ffprobe /usr/local/bin/
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 RUN go test ./...
 RUN CGO_ENABLED=0 go build -o /out/server ./cmd/server
-
-FROM mwader/static-ffmpeg:7.1.1 AS media-tools
 
 FROM debian:12.12-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
