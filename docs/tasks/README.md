@@ -22,9 +22,9 @@ TODO → IN_PROGRESS → REVIEW → PASS
 
 只有满足任务卡中的全部“验收条件”，并记录对应证据后，任务才能标记为 `PASS`。不能用“代码已写完”“看起来能跑”替代验收。
 
-### 开发期 Docker 验收延期例外（2026-09-23）
+### 开发期 Docker 验收延期例外（2026-09-23，历史记录）
 
-当前 TASK-001 的实现骨架已落盘，唯一未闭环项为 Codex Windows 沙箱无法访问宿主 Docker Desktop，宿主用户已确认 `desktop-linux` Docker Server 正常。经人工确认，开发阶段允许先推进 TASK-002～TASK-008，TASK-001 继续保持 `BLOCKED`，不得伪造为 `PASS`。
+开发阶段 TASK-001 的实现骨架已落盘，但当时 Codex Windows 沙箱无法访问宿主 Docker Desktop。经人工确认，曾允许先推进 TASK-002～TASK-008，同时保持 TASK-001 为 `BLOCKED`。ISSUE-001 修复后的 Docker 验收证据已补记在 TASK-001 任务卡；当前待人工复核且修复尚未提交，状态为 `REVIEW`。
 
 该例外只改变开发顺序，不改变最终验收标准：
 
@@ -41,7 +41,7 @@ TODO → IN_PROGRESS → REVIEW → PASS
 
 | ID | 任务 | 依赖 | 状态 |
 |---|---|---|---|
-| [TASK-001](TASK-001.md) | 工程骨架与运行基线 | - | BLOCKED |
+| [TASK-001](TASK-001.md) | 工程骨架与运行基线 | - | REVIEW |
 | [TASK-002](TASK-002.md) | 领域模型与确定性 Mix Planner | TASK-001 | PASS |
 | [TASK-003](TASK-003.md) | 本地存储与 FFprobe 媒体探测 | TASK-001 | PASS |
 | [TASK-004](TASK-004.md) | 素材上传与查询 API | TASK-003 | PASS |

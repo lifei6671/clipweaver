@@ -40,16 +40,16 @@
 
 ## 验收条件
 
-- [ ] Docker builder 日志证明 `go test ./...` 实际执行并通过。
-- [ ] Docker builder 日志证明前端测试实际执行并通过。
-- [ ] Docker builder 日志证明 `pnpm --dir web build` 实际执行并通过。
-- [ ] `docker compose config` 通过。
-- [ ] `docker compose build --no-cache` 通过。
-- [ ] `docker compose up -d` 后 `GET /api/health` 返回 200。
-- [ ] health 结果证明 FFmpeg 与 FFprobe 在运行容器中可执行。
-- [ ] 浏览器访问根路径能够加载 React 页面。
-- [ ] Dockerfile/lockfile 能明确确认 Go、Node、pnpm 和 FFmpeg/FFprobe 的版本来源。
-- [ ] 仓库没有生成物、运行期 data、密钥或本机绝对路径。
+- [x] Docker builder 日志证明 `go test ./...` 实际执行并通过。
+- [x] Docker builder 日志证明前端测试实际执行并通过。
+- [x] Docker builder 日志证明 `pnpm --dir web build` 实际执行并通过。
+- [x] `docker compose config` 通过。
+- [x] `docker compose build --no-cache` 通过。
+- [x] `docker compose up -d` 后 `GET /api/health` 返回 200。
+- [x] health 结果证明 FFmpeg 与 FFprobe 在运行容器中可执行。
+- [x] 浏览器访问根路径能够加载 React 页面。
+- [x] Dockerfile/lockfile 能明确确认 Go、Node、pnpm 和 FFmpeg/FFprobe 的版本来源。
+- [x] 仓库没有生成物、运行期 data、密钥或本机绝对路径。
 
 ## 验收证据
 
@@ -69,3 +69,16 @@
 - 本次 runner 发现（2026-09-23）：docker context ls 退出码 1，.docker/contexts/meta 拒绝访问；docker context show 退出码 0，显示 default；无 DOCKER* 环境变量。Get-Process 发现 Docker Desktop、com.docker.backend、com.docker.build、com.docker.sailor、docker-agent；Get-Service 未发现 Docker 服务（仅 Microsoft/NVIDIA 的无关 container 服务）。Docker 命名管道存在，但临时空 DOCKER_CONFIG 下的 docker context ls 仅列出 default，docker version 连接 docker_engine 为 permission denied；显式连接 dockerDesktopLinuxEngine、docker_engine_linux、dockerDesktopEngine 的 docker version 均为 permission denied（退出码 1）。对 .docker/config.json 的 Test-Path、Get-Item、Get-Acl、icacls 均被拒绝访问，无法确认文件存在性或读取 ACL；.docker/contexts/meta 的 icacls 亦拒绝访问。没有可用 Server/context，因此本次未运行 Compose 构建和运行验收，状态继续 BLOCKED。
 - 本次恢复验收（2026-09-23）：用户在正常 Windows PowerShell 报告 desktop-linux 的 Docker Desktop 4.91.0 / Engine 29.8.0（linux/amd64）可用；Agent 执行上下文中 docker context show 退出码 0 但只显示 default，且 Docker config.json 拒绝访问。docker --context desktop-linux version 退出码 1，因 desktop-linux/meta.json Access is denied 无法解析 endpoint；docker --context desktop-linux compose version 退出码 0，显示 Compose v5.5.1，但仅证明插件存在。进程级 docker --host npipe:////./pipe/dockerDesktopLinuxEngine version 退出码 1，连接 API 为 permission denied。阻塞定位为 Agent 执行上下文对 context 元数据和 Docker 管道的权限限制；未在 Agent 会话执行 Compose config/build/up、builder 测试、health、根页面或 down，不能引用用户宿主结果充当验收通过。状态继续 BLOCKED，Commit pending。
 - 执行身份根因补充（2026-09-23）：Agent PowerShell 的 whoami 为 lifeilin\codexsandboxonline（CodexSandboxUsers），Medium 完整性，SessionId 1；父链为 pwsh → codex-command-runner → codex。环境变量 USERNAME/USERPROFILE 仍指向 lifei，但不代表实际 token 用户；普通用户文件 .gitconfig 可读取，.docker 元数据与 Docker named pipe 被拒。Docker Desktop/后端亦在 SessionId 1，其 Owner 因访问限制未能读取。证据指向独立沙箱账号的访问边界；未发现低完整性或 AppContainer 迹象，无法从当前进程命令行/环境变量确认具体沙箱启动开关。
+
+### ISSUE-001 修复与 TASK-001 Docker 复验（2026-09-23）
+
+- ISSUE-001：**技术阻塞已关闭，待人工复核**。仅修改 `internal/server/app_test.go`：构造实际超过 1 MiB 限额的 multipart 请求，将完整 HTTP 请求预装进内存连接，调用实际 fasthttp `ServeConn`，读取其已写出的响应并断言 HTTP 413 与 `error.code=UPLOAD_TOO_LARGE`；随后同一 app 仍可响应 `/api/missing`。没有改动生产 BodyLimit、错误映射或上传上限。
+- 根因：fasthttp 在 `Content-Length > BodyLimit` 时先拒绝、写 413 并关闭连接；原测试的 Go HTTP 客户端仍在写 body，`Do` 可能先返回 `write: connection reset by peer`。Fiber `app.Test` 同样先返回 `ServeConn` 的 body-limit 错误，不读取已写出的 413，因此本测试用预装完整请求的内存连接读取真实公共响应。另用运行镜像的实际 HTTP multipart 请求验证网络端契约。
+- 定向测试：宿主 `go test ./internal/server -run '^TestBodyLimitUsesPublicError$' -count=20` 退出码 0，20 次 PASS；Linux `golang:1.25.14-bookworm` 容器执行同一命令，退出码 0，20 次 PASS。
+- 宿主全量测试：`go test ./... -count=1` 退出码 1；本次 ISSUE-001 用例通过，唯一失败为既有 `TestStaticPageAndSPAFallback` 在 Windows 清理 `TempDir/index.html` 时报告文件占用。该用例不在 ISSUE-001 范围内，未修改。Docker/Linux builder 的完整 Go 测试通过。
+- 正式构建：`docker compose -p clipweaver-issue001 build --no-cache --progress plain` 退出码 0，最终代码复建日志显示前端 31/31 tests PASS、`tsc --noEmit && vite build` PASS、`RUN go test ./...` PASS（含 `internal/server`）、`CGO_ENABLED=0 go build` PASS、runtime image `clipweaver-issue001-app` 构建完成。
+- Compose 运行：`docker compose -p clipweaver-issue001 config --quiet` 退出码 0；`up -d` 退出码 0，最终镜像 `up -d --force-recreate` 退出码 0；`ps` 显示 app `Up (healthy)`。容器内 `GET http://127.0.0.1:8080/api/health` 返回 200、`status=ok`、FFmpeg 和 FFprobe 均为 7.1.1。
+- 根页面：Compose 容器内 `GET /` 返回 200 和 React 入口 HTML。宿主 8080 同时被其他进程占用，因此使用同一运行镜像的独立容器映射 18080 浏览器访问；页面实际显示视频上传、口播选择和混剪控件，容器日志记录 `/`、JS、CSS、`/api/assets` 均为 200；不将宿主 8080 浏览器结果算作 Compose 证据。
+- 实际超限 HTTP：同一正式运行镜像的独立限额容器设置 `MAX_UPLOAD_MB=1`，用容器内 `dd` 生成 2 MiB 文件、`curl -F file=@/tmp/oversize.bin` 上传 `/api/assets/audio`，收到 `HTTP/1.1 413 Request Entity Too Large` 和 `error.code=UPLOAD_TOO_LARGE`；随后 `GET /api/health` 为 200、`status=ok`。
+- 版本与交付文件：Dockerfile 锁定 Go 1.25.14、Node 22.23.2、pnpm 10.17.1、FFmpeg/FFprobe 7.1.1；`go.mod`、`go.sum`、`web/pnpm-lock.yaml`、Dockerfile、Compose、`.dockerignore` 均已跟踪。`git ls-files` 检查未见构建生成目录或运行期 data；本次检查的交付配置未见本机绝对路径或密钥。用户未跟踪的 `material/` 和最终验收报告未处理。
+- 状态：TASK-001 自身验收条件已形成运行证据，转 `REVIEW` 等待人工复核。修复尚未提交，当前 HEAD `dacc3530d25e148b90cde64c74333e7bdbf42b05`，本次 commit 为 `pending`；按任务索引规则，提交和复核前不标 `PASS`，TASK-009 硬门禁继续生效。

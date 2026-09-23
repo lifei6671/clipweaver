@@ -1,10 +1,12 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -12,7 +14,22 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+type bufferedConn struct {
+	input  *bytes.Reader
+	output bytes.Buffer
+}
+
+func (c *bufferedConn) Read(p []byte) (int, error)       { return c.input.Read(p) }
+func (c *bufferedConn) Write(p []byte) (int, error)      { return c.output.Write(p) }
+func (c *bufferedConn) Close() error                     { return nil }
+func (c *bufferedConn) LocalAddr() net.Addr              { return &net.TCPAddr{} }
+func (c *bufferedConn) RemoteAddr() net.Addr             { return &net.TCPAddr{} }
+func (c *bufferedConn) SetDeadline(time.Time) error      { return nil }
+func (c *bufferedConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *bufferedConn) SetWriteDeadline(time.Time) error { return nil }
 
 func TestBodyLimitUsesPublicError(t *testing.T) {
 	dist := t.TempDir()
@@ -24,20 +41,38 @@ func TestBodyLimitUsesPublicError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	var payload bytes.Buffer
+	writer := multipart.NewWriter(&payload)
+	part, err := writer.CreateFormFile("file", "oversize.wav")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer app.Shutdown()
-	go func() { _ = app.Listener(listener) }()
-	req, err := http.NewRequest("POST", "http://"+listener.Addr().String()+"/api/assets/audio", bytes.NewReader(bytes.Repeat([]byte{'x'}, 1024*1024+1)))
+	if _, err := part.Write(bytes.Repeat([]byte{'x'}, 1024*1024)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Len() <= 1024*1024 {
+		t.Fatalf("multipart body length %d does not exceed 1 MiB limit", payload.Len())
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/assets/audio", &payload)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	warmup, err := app.Test(httptest.NewRequest(http.MethodGet, "/api/missing", nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.Header.Set("Content-Type", "multipart/form-data; boundary=x")
-	response, err := http.DefaultClient.Do(req)
-	if err != nil {
+	warmup.Body.Close()
+	var wire bytes.Buffer
+	if err := req.Write(&wire); err != nil {
 		t.Fatal(err)
+	}
+	conn := &bufferedConn{input: bytes.NewReader(wire.Bytes())}
+	// app.Test returns the parser error before reading the 413 already written by fasthttp.
+	serveErr := app.Server().ServeConn(conn)
+	response, err := http.ReadResponse(bufio.NewReader(&conn.output), req)
+	if err != nil {
+		t.Fatalf("read response after ServeConn error %v: %v", serveErr, err)
 	}
 	defer response.Body.Close()
 	var body struct {
@@ -50,6 +85,14 @@ func TestBodyLimitUsesPublicError(t *testing.T) {
 	}
 	if response.StatusCode != 413 || body.Error.Code != "UPLOAD_TOO_LARGE" {
 		t.Fatalf("status=%d error=%+v", response.StatusCode, body.Error)
+	}
+	page, err := app.Test(httptest.NewRequest(http.MethodGet, "/api/missing", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	page.Body.Close()
+	if page.StatusCode != http.StatusNotFound {
+		t.Fatalf("app stopped responding after oversized upload: status=%d", page.StatusCode)
 	}
 	if _, err := New(Config{WebDistDir: dist, DataDir: t.TempDir(), MaxUploadMB: int(^uint(0) >> 1)}, logger); err == nil {
 		t.Fatal("overflowing upload limit accepted")
