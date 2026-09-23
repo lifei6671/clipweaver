@@ -1,6 +1,8 @@
 # TASK-010：可复现测试素材与 Docker E2E
 
 - 状态：以 [任务索引](README.md) 为准
+- 需求基线：[requirements-baseline.md](../requirements-baseline.md)，不可削弱
+- 需求基线：[requirements-baseline.md](../requirements-baseline.md)，不可削弱
 - 依赖：TASK-009
 - 可并行：否
 - 目标：在“宿主机只有 Docker + Docker Compose”的前提下，用容器内可重复生成的素材验证完整真实业务链路。

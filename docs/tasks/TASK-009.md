@@ -1,6 +1,8 @@
 # TASK-009：Docker 交付与运行配置
 
 - 状态：以 [任务索引](README.md) 为准
+- 需求基线：[requirements-baseline.md](../requirements-baseline.md)，不可削弱
+- 需求基线：[requirements-baseline.md](../requirements-baseline.md)，不可削弱
 - 依赖：TASK-006、TASK-008
 - 可并行：否
 - 目标：把完整前后端、测试构建链和 FFmpeg 运行环境封装为验收机只需 Docker/Docker Compose 即可使用的单容器应用。

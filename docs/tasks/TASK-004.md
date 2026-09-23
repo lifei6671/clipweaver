@@ -1,6 +1,8 @@
 # TASK-004：素材上传与查询 API
 
 - 状态：以 [任务索引](README.md) 为准
+- 需求基线：[requirements-baseline.md](../requirements-baseline.md)，不可削弱
+- 需求基线：[requirements-baseline.md](../requirements-baseline.md)，不可削弱
 - 依赖：TASK-003
 - 可并行：完成后 TASK-007 可提前开始
 - 目标：通过 HTTP 暴露视频、口播上传和资产查询能力，并以 staging + 原子 promotion 保证失败不留下半成品。

@@ -1,6 +1,8 @@
 # TASK-008：前端混剪、预览与下载流程
 
 - 状态：以 [任务索引](README.md) 为准
+- 需求基线：[requirements-baseline.md](../requirements-baseline.md)，不可削弱
+- 需求基线：[requirements-baseline.md](../requirements-baseline.md)，不可削弱
 - 依赖：TASK-006、TASK-007
 - 可并行：否
 - 目标：完成用户从已选素材发起混剪到预览、下载和失败重试的完整页面流程。

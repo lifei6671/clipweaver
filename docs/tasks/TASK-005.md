@@ -1,6 +1,8 @@
 # TASK-005：FFmpeg 渲染执行器与输出验收
 
 - 状态：以 [任务索引](README.md) 为准
+- 需求基线：[requirements-baseline.md](../requirements-baseline.md)，不可削弱
+- 需求基线：[requirements-baseline.md](../requirements-baseline.md)，不可削弱
 - 依赖：TASK-002、TASK-003
 - 可并行：否
 - 目标：把确定的 MixPlan 帧精确渲染为满足完整媒体合同的 1080×1920 MP4，并用 FFprobe 证明满足 100ms 时长要求。

@@ -1,6 +1,8 @@
 # TASK-006：Mix 编排服务与 HTTP API
 
 - 状态：以 [任务索引](README.md) 为准
+- 需求基线：[requirements-baseline.md](../requirements-baseline.md)，不可削弱
+- 需求基线：[requirements-baseline.md](../requirements-baseline.md)，不可削弱
 - 依赖：TASK-002、TASK-004、TASK-005
 - 可并行：否
 - 目标：把资产读取、Planner、Executor、Validator 串成受超时和并发保护的同步混剪 API。

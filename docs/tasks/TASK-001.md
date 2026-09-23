@@ -1,6 +1,8 @@
 # TASK-001：工程骨架与运行基线
 
 - 状态：以 [任务索引](README.md) 为准
+- 需求基线：[requirements-baseline.md](../requirements-baseline.md)，不可削弱
+- 需求基线：[requirements-baseline.md](../requirements-baseline.md)，不可削弱
 - 依赖：无
 - 可并行：否
 - 目标：建立后续所有任务共享的 Go、React、测试和 Docker-only 验收基线。

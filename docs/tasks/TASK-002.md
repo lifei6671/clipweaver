@@ -1,6 +1,8 @@
 # TASK-002：领域模型与确定性 Mix Planner
 
 - 状态：以 [任务索引](README.md) 为准
+- 需求基线：[requirements-baseline.md](../requirements-baseline.md)，不可削弱
+- 需求基线：[requirements-baseline.md](../requirements-baseline.md)，不可削弱
 - 依赖：TASK-001
 - 可并行：可与 TASK-003 并行
 - 目标：在纯 Go 领域层实现可复现、可证明不重叠的混剪规划算法。

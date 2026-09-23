@@ -1,6 +1,8 @@
 # TASK-003：本地存储与 FFprobe 媒体探测
 
 - 状态：以 [任务索引](README.md) 为准
+- 需求基线：[requirements-baseline.md](../requirements-baseline.md)，不可削弱
+- 需求基线：[requirements-baseline.md](../requirements-baseline.md)，不可削弱
 - 依赖：TASK-001
 - 可并行：可与 TASK-002 并行
 - 目标：建立安全的本地资源存储、确定的 stream 选择规则和微秒级媒体时长探测能力。

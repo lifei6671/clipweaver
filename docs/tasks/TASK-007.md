@@ -1,6 +1,8 @@
 # TASK-007：前端素材上传与选择流程
 
 - 状态：以 [任务索引](README.md) 为准
+- 需求基线：[requirements-baseline.md](../requirements-baseline.md)，不可削弱
+- 需求基线：[requirements-baseline.md](../requirements-baseline.md)，不可削弱
 - 依赖：TASK-004
 - 可并行：可在 TASK-005/TASK-006 开发期间推进
 - 目标：完成用户进入页面后到“具备可提交混剪输入”为止的素材工作流。
