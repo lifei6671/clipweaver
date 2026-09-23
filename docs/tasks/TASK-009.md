@@ -50,7 +50,7 @@
 
 ## 验收证据
 
-- Commit：`pending`；当前改动仅涉及 Dockerfile、Compose、`.dockerignore` 和本任务状态/证据，尚未提交，按任务索引保持 `REVIEW`。
+- Commit：`053cb63e76b3cd0d259113a69a1857b337058731`；Dockerfile、Compose、`.dockerignore` 和本任务验收证据已提交，人工 Review 已通过，状态为 `PASS`。
 - Compose config：`docker compose -p clipweaver-task009 config --quiet` 退出 0。覆盖环境变量 `HOST_PORT=19085`、`APP_PORT=19086`、`DATA_DIR=/app/data/override`、`LOG_LEVEL=DEBUG`、`MAX_UPLOAD_MB=64`、`MIX_TIMEOUT=2m`、`MAX_CONCURRENT_MIXES=3` 后，解析结果分别为 host `19085` → container `19086`、`APP_ADDR=:19086`、目标数据目录和所有配置值；healthcheck 指向 `127.0.0.1:19086`。
 - No-cache build：`docker compose -p clipweaver-task009 build --no-cache --progress plain` 退出 0，生成 `clipweaver-task009-app:latest`；完整日志保存在本机 `%TEMP%/clipweaver-task009-build.log`。Builder 均只在 Docker 内运行，没有使用宿主 Go/Node/pnpm/FFmpeg/curl；`.dockerignore` 排除 `data/`、`material/`、已安装依赖与已有前端 dist。
 - Builder tests：前端 Vitest `31 passed / 0 failed`，`tsc --noEmit && vite build` PASS，Go builder `go test ./...` 全部包 PASS，`CGO_ENABLED=0 go build` PASS。Go builder 现含 FFmpeg/FFprobe 7.1.1；另以 `docker build --target go-builder` 后执行 `go test ./internal/media -run '^TestExecutorRealFFmpeg$' -count=1 -v`，该用例 PASS、无 SKIP，视频/音频/format 均为 4.500000 秒。

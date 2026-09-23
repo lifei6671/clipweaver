@@ -58,6 +58,14 @@ TODO → IN_PROGRESS → REVIEW → PASS
 - TASK-006：完整原口播的 API、浏览器预览、Range、下载及失败后重试均通过；TASK-005 已 `PASS`，状态 `PASS`。
 - TASK-008：完整原口播的浏览器制作、播放至尾部、下载落盘及失败后重做均通过；前端实现提交 `dacc3530d25e148b90cde64c74333e7bdbf42b05`，补充证据提交 `19f97e4d4a41480aa4e5b07280cc38ebc5277adc`，依赖均已 `PASS`，状态 `PASS`。TASK-009 前置门禁已满足，任务本身仍为 `TODO`。
 
+### 2026-09-23 TASK-009 人工 Review 后的当前状态
+
+- TASK-009：Docker 无缓存构建、builder 测试、独立 Compose 运行、持久化及恢复验收通过；实现及证据提交 `053cb63e76b3cd0d259113a69a1857b337058731` 已获人工 Review 通过，状态 `PASS`。TASK-010 的前置条件已满足。
+
+### 2026-09-23 TASK-010 人工 Review 后的当前状态
+
+- TASK-010：空数据卷启动、容器内 fixture、两轮真实 HTTP E2E、媒体规格与时长、rotation、错误分支及示例成片均已验收；实现提交 `9696f87e11f8be4dec5f2525d050a059c5dccaf4` 已获人工 Review 通过，状态 `PASS`。TASK-011 的前置条件已满足，任务本身仍为 `TODO`。
+
 ## 状态总表
 
 | ID | 任务 | 依赖 | 状态 |
@@ -70,8 +78,8 @@ TODO → IN_PROGRESS → REVIEW → PASS
 | [TASK-006](TASK-006.md) | Mix 编排服务与 HTTP API | TASK-002, TASK-004, TASK-005 | PASS |
 | [TASK-007](TASK-007.md) | 前端素材上传与选择流程 | TASK-004 | PASS |
 | [TASK-008](TASK-008.md) | 前端混剪、预览与下载流程 | TASK-006, TASK-007 | PASS |
-| [TASK-009](TASK-009.md) | Docker 交付与运行配置 | TASK-006, TASK-008 | REVIEW |
-| [TASK-010](TASK-010.md) | 可复现测试素材与 Docker E2E | TASK-009 | TODO |
+| [TASK-009](TASK-009.md) | Docker 交付与运行配置 | TASK-006, TASK-008 | PASS |
+| [TASK-010](TASK-010.md) | 可复现测试素材与 Docker E2E | TASK-009 | PASS |
 | [TASK-011](TASK-011.md) | README、AI 协作记录与最终交付 | TASK-010 | TODO |
 
 ## 推荐推进顺序
