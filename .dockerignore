@@ -1,0 +1,11 @@
+.git
+.codegraph
+.idea
+data
+web/node_modules
+web/dist
+web/coverage
+*.log
+*.mp4
+.env
+.env.*

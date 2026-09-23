@@ -53,10 +53,19 @@
 
 ## 验收证据
 
-- Commit：
-- Docker build：
-- Go tests（builder）：
-- Frontend tests/build（builder）：
-- Health：
-- 版本锁定：
-- 备注：
+- 开发顺序决策（2026-09-23）：人工确认先继续业务代码开发，Docker 调试统一后置；本任务继续保持 `BLOCKED`，未通过项不得视为通过。按任务索引中的开发期例外，TASK-002～TASK-008 可先推进；TASK-009 开始前必须补齐本任务全部 Docker 验收并标记 `PASS`。
+
+- 修改文件：go.mod、go.sum、cmd/server/main.go、internal/server/{app,config}.go 及测试、web/ 的 React/TypeScript/Vite/Ant Design 源码与 pnpm-lock.yaml、Dockerfile、docker-compose.yml、.dockerignore、.gitignore、README.md、docs/tasks/README.md、本任务卡。
+- Commit：pending（按本次执行要求不提交）。
+- 依赖锁文件生成：go mod tidy 退出码 0；corepack pnpm install --lockfile-only --ignore-scripts 退出码 0，使用 pnpm 10.17.1。两项仅用于生成锁文件，不计为 Linux 测试。
+- Compose 配置：docker compose config 退出码 0；CLI 同时提示宿主 Docker config.json 无访问权限。
+- Docker build：docker compose build --no-cache 退出码 1；拉取镜像前报 error listing credentials - A specified logon session does not exist。此前 docker version --format '{{.Server.Version}}' 退出码 1，npipe:////./pipe/docker_engine 不存在；常见路径未找到 Docker Desktop 可执行文件。
+- Go tests（builder）：NOT_RUN；Docker build 未进入 builder。
+- Frontend tests/build（builder）：NOT_RUN；Docker build 未进入 builder。
+- Compose up / Health / 根页面：NOT_RUN；Docker runner 不可用，没有启动容器。
+- 版本锁定：golang:1.25.14-bookworm、node:22.23.2-bookworm-slim、Corepack pnpm@10.17.1、mwader/static-ffmpeg:7.1.1、debian:12.12-slim；应用依赖见 Go 和 pnpm 锁文件。以上是源码配置，尚未通过 Docker 构建验证。
+- 阻塞原因与影响：当前环境无法完成 TASK-001 的 Docker builder 测试、构建、启动、运行容器 health 与浏览器验收，故不能进入 REVIEW。恢复条件：可用 Docker daemon/runner、Docker Compose 与正常镜像凭据；随后重新执行 docker compose config、docker compose build --no-cache、docker compose up -d、health 与根页面验证，最后 docker compose down。
+- 本次续验（2026-09-23）：docker version 退出码 1；CLI 提示无法读取 Docker config.json（Access is denied），且 npipe:////./pipe/docker_engine 不存在，未获得 Server 信息。Docker daemon 和镜像凭据未恢复；本次未运行 docker compose config、build、up、health、根页面或 down，前次 Compose config 通过的记录不视为本次运行验收。
+- 本次 runner 发现（2026-09-23）：docker context ls 退出码 1，.docker/contexts/meta 拒绝访问；docker context show 退出码 0，显示 default；无 DOCKER* 环境变量。Get-Process 发现 Docker Desktop、com.docker.backend、com.docker.build、com.docker.sailor、docker-agent；Get-Service 未发现 Docker 服务（仅 Microsoft/NVIDIA 的无关 container 服务）。Docker 命名管道存在，但临时空 DOCKER_CONFIG 下的 docker context ls 仅列出 default，docker version 连接 docker_engine 为 permission denied；显式连接 dockerDesktopLinuxEngine、docker_engine_linux、dockerDesktopEngine 的 docker version 均为 permission denied（退出码 1）。对 .docker/config.json 的 Test-Path、Get-Item、Get-Acl、icacls 均被拒绝访问，无法确认文件存在性或读取 ACL；.docker/contexts/meta 的 icacls 亦拒绝访问。没有可用 Server/context，因此本次未运行 Compose 构建和运行验收，状态继续 BLOCKED。
+- 本次恢复验收（2026-09-23）：用户在正常 Windows PowerShell 报告 desktop-linux 的 Docker Desktop 4.91.0 / Engine 29.8.0（linux/amd64）可用；Agent 执行上下文中 docker context show 退出码 0 但只显示 default，且 Docker config.json 拒绝访问。docker --context desktop-linux version 退出码 1，因 desktop-linux/meta.json Access is denied 无法解析 endpoint；docker --context desktop-linux compose version 退出码 0，显示 Compose v5.5.1，但仅证明插件存在。进程级 docker --host npipe:////./pipe/dockerDesktopLinuxEngine version 退出码 1，连接 API 为 permission denied。阻塞定位为 Agent 执行上下文对 context 元数据和 Docker 管道的权限限制；未在 Agent 会话执行 Compose config/build/up、builder 测试、health、根页面或 down，不能引用用户宿主结果充当验收通过。状态继续 BLOCKED，Commit pending。
+- 执行身份根因补充（2026-09-23）：Agent PowerShell 的 whoami 为 lifeilin\codexsandboxonline（CodexSandboxUsers），Medium 完整性，SessionId 1；父链为 pwsh → codex-command-runner → codex。环境变量 USERNAME/USERPROFILE 仍指向 lifei，但不代表实际 token 用户；普通用户文件 .gitconfig 可读取，.docker 元数据与 Docker named pipe 被拒。Docker Desktop/后端亦在 SessionId 1，其 Owner 因访问限制未能读取。证据指向独立沙箱账号的访问边界；未发现低完整性或 AppContainer 迹象，无法从当前进程命令行/环境变量确认具体沙箱启动开关。

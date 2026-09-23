@@ -22,12 +22,24 @@ TODO → IN_PROGRESS → REVIEW → PASS
 
 只有满足任务卡中的全部“验收条件”，并记录对应证据后，任务才能标记为 `PASS`。不能用“代码已写完”“看起来能跑”替代验收。
 
+### 开发期 Docker 验收延期例外（2026-09-23）
+
+当前 TASK-001 的实现骨架已落盘，唯一未闭环项为 Codex Windows 沙箱无法访问宿主 Docker Desktop，宿主用户已确认 `desktop-linux` Docker Server 正常。经人工确认，开发阶段允许先推进 TASK-002～TASK-008，TASK-001 继续保持 `BLOCKED`，不得伪造为 `PASS`。
+
+该例外只改变开发顺序，不改变最终验收标准：
+
+- TASK-002～TASK-008 可以基于已落盘的 TASK-001 工程骨架推进，并各自按任务卡完成宿主可执行测试与人工 Review。
+- TASK-001 的 Docker builder、Compose 启动、health、FFmpeg/FFprobe 与根页面验收仍必须补齐。
+- TASK-009 是硬门禁；开始 TASK-009 前，TASK-001 必须补齐全部 Docker 验收并标记 `PASS`。
+- TASK-010 / TASK-011 的 clean-room Docker E2E 与最终交付要求保持不变。
+- 除上述 TASK-001 Docker 权限阻塞外，其他依赖仍遵守“前置任务必须 PASS”规则。
+
 ## 状态总表
 
 | ID | 任务 | 依赖 | 状态 |
 |---|---|---|---|
-| [TASK-001](TASK-001.md) | 工程骨架与运行基线 | - | TODO |
-| [TASK-002](TASK-002.md) | 领域模型与确定性 Mix Planner | TASK-001 | TODO |
+| [TASK-001](TASK-001.md) | 工程骨架与运行基线 | - | BLOCKED |
+| [TASK-002](TASK-002.md) | 领域模型与确定性 Mix Planner | TASK-001 | REVIEW |
 | [TASK-003](TASK-003.md) | 本地存储与 FFprobe 媒体探测 | TASK-001 | TODO |
 | [TASK-004](TASK-004.md) | 素材上传与查询 API | TASK-003 | TODO |
 | [TASK-005](TASK-005.md) | FFmpeg 渲染执行器与输出验收 | TASK-002, TASK-003 | TODO |
@@ -97,6 +109,6 @@ docker compose down
 - 每次开始任务前必须阅读 `../requirements-baseline.md`；实现、测试或任务卡与需求基线冲突时，任务必须转为 `BLOCKED`。
 - 技术设计可以比原题更严格，但不得通过实现便利性降低原题的功能、交付或验收要求。
 - 发现设计缺口时先更新技术设计或任务卡，再继续实现。
-- 后续任务不得依赖尚未 `PASS` 的前置任务。
+- 后续任务不得依赖尚未 `PASS` 的前置任务；仅适用上文“开发期 Docker 验收延期例外”时，允许 TASK-002～TASK-008 暂时基于 TASK-001 已落盘骨架推进。
 - 验收项必须可以通过命令、自动化测试、HTTP 响应、FFprobe 输出或明确 UI 操作复现。
 - 自动字幕不属于 v0.1 基础任务。

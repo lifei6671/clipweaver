@@ -3,7 +3,7 @@
 - 状态：以 [任务索引](README.md) 为准
 - 需求基线：[requirements-baseline.md](../requirements-baseline.md)，不可削弱
 - 需求基线：[requirements-baseline.md](../requirements-baseline.md)，不可削弱
-- 依赖：TASK-001
+- 依赖：TASK-001（按任务索引中的“开发期 Docker 验收延期例外”允许先行开发；TASK-001 最终仍须补验并 PASS）
 - 可并行：可与 TASK-003 并行
 - 目标：在纯 Go 领域层实现可复现、可证明不重叠的混剪规划算法。
 
@@ -58,7 +58,13 @@
 
 ## 验收证据
 
-- Commit：
-- 测试命令：
-- 测试结果：
-- 关键不变量说明：
+- 修改文件：`internal/domain/asset.go`、`internal/domain/mix.go`、`internal/mixer/planner.go`、`internal/mixer/planner_test.go`、`docs/tasks/README.md`、`docs/tasks/TASK-002.md`。
+- Commit：pending（本任务不提交、不推送）。
+- 实际命令与结果：首次运行两条定向 `go test` 时，默认 `GOCACHE` 返回 Access is denied（exit 1）；改指向可写临时目录后在 Windows 宿主重跑：
+  - `gofmt -w internal/domain/asset.go internal/domain/mix.go internal/mixer/planner.go internal/mixer/planner_test.go`：PASS，exit 0。
+  - `go test ./internal/mixer/... -count=1`：PASS，exit 0。
+  - `go test ./internal/domain/... ./internal/mixer/... -count=1`：PASS，exit 0；domain 无测试文件，mixer 通过。
+  - `go test ./... -count=1`：FAIL，exit 1；mixer 通过，失败在 TASK-001 的 `internal/server/TestStaticPageAndSPAFallback` 临时 `index.html` 清理，Windows 报文件被其他进程占用。本任务未修改该测试或服务端代码。
+- 关键不变量：时间统一为 `DurationUS`；按 AssetID 稳定排序后建立互斥候选，包含正时长尾片；局部 seeded Fisher-Yates 洗牌并顺序消费，每个候选至多使用一次，只有最后一片可截短。`MixPlan.Validate` 检查目标/片长为正、clip 为正、源区间在界内且与候选对齐、同素材候选不重复、非末片不截短及总时长精确等于目标。总可用时长不足返回 `INSUFFICIENT_VIDEO_DURATION`。
+- Review（SELF_REVIEW）：仅审查本任务新增代码与状态/证据改动；未发现 P0/P1 或确定性/不变量问题。修正了不足时长测试在意外 `nil` 错误下会 panic 的断言，并重跑定向测试通过。
+- Docker builder 全量复验：按任务索引中的开发期例外后置；此处未执行、未标为通过。TASK-001 仍为 BLOCKED，TASK-009 前必须补齐。

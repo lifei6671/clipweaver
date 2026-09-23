@@ -33,3 +33,9 @@ go.work.sum
 
 # Local code intelligence data
 .codegraph/
+
+# Local dependencies, build output and runtime files
+web/node_modules/
+web/dist/
+web/coverage/
+data/
