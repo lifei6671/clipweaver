@@ -55,7 +55,7 @@
 
 ## 验收证据
 
-- Commit：pending（沙箱不写 `.git`；待人工 REVIEW）
+- Commit：400d70ecbf4138eb1e21c34136aa840f0cabea8c（实现提交；2026-09-23 已完成人工代码 Review 并允许继续开发；真实媒体/rotation/100ms 实测与人工试听仍后置，故任务状态暂保留 REVIEW）。
 - 宿主环境（2026-09-23）：`Get-Command ffmpeg` 与 `Get-Command ffprobe` 均无结果；版本不可获取。未安装软件。
 - 集成测试命令：`go test ./internal/media/... -run '^TestExecutorRealFFmpeg$' -count=1 -v` → `SKIP: ffmpeg unavailable`。真实媒体验收未运行。
 - 参数/fixture 测试：`go test ./internal/media/... -count=1` PASS；`go test ./internal/domain/... ./internal/media/... -count=1` PASS；`go vet ./internal/media/...` PASS（使用可写的临时 GOCACHE）。覆盖整数微秒裁剪、默认 autorotate、标准化、拼接顺序、显式映射、失败清理、取消，以及 JSON 媒体合同与 100ms 边界。

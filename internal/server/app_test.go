@@ -88,3 +88,37 @@ func TestStaticPageAndSPAFallback(t *testing.T) {
 		t.Fatalf("unknown API returned %d", response.StatusCode)
 	}
 }
+
+func TestMixRoutesRegistered(t *testing.T) {
+	dist := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dist, "index.html"), []byte("ok"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	app, err := New(Config{WebDistDir: dist, DataDir: t.TempDir(), MaxUploadMB: 1}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		method, path, body, code string
+		status                   int
+	}{
+		{"POST", "/api/mixes", `{}`, "NO_VIDEO_SELECTED", 400},
+		{"GET", "/api/mixes/bad/file", "", "INVALID_ID", 400},
+		{"GET", "/api/mixes/bad/download", "", "INVALID_ID", 400},
+	} {
+		response, err := app.Test(httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body)), -1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		decodeErr := json.NewDecoder(response.Body).Decode(&got)
+		response.Body.Close()
+		if decodeErr != nil || response.StatusCode != tc.status || got.Error.Code != tc.code {
+			t.Fatalf("%s %s: status=%d error=%+v decode=%v", tc.method, tc.path, response.StatusCode, got.Error, decodeErr)
+		}
+	}
+}

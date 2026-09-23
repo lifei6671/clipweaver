@@ -18,7 +18,7 @@ import (
 	"github.com/lifei6671/clipweaver/internal/storage"
 )
 
-func New(cfg Config, logger *slog.Logger) (*fiber.App, error) {
+func New(cfg Config, logger *slog.Logger, shutdownContext ...context.Context) (*fiber.App, error) {
 	if cfg.MaxUploadMB <= 0 || cfg.MaxUploadMB > int(^uint(0)>>1)/(1024*1024) {
 		return nil, fmt.Errorf("MAX_UPLOAD_MB is out of range")
 	}
@@ -30,6 +30,7 @@ func New(cfg Config, logger *slog.Logger) (*fiber.App, error) {
 		return nil, err
 	}
 	assets := service.NewAssetService(store, media.NewProber("", 0))
+	mixes := service.NewMixService(store, media.NewExecutor("", ""), cfg.MixTimeout, cfg.MaxConcurrentMixes, nil)
 	app := fiber.New(fiber.Config{
 		DisableStartupMessage: true,
 		BodyLimit:             cfg.MaxUploadMB * 1024 * 1024,
@@ -66,6 +67,11 @@ func New(cfg Config, logger *slog.Logger) (*fiber.App, error) {
 		})
 	})
 	httpapi.Register(app, assets, logger)
+	httpapi.RegisterMixes(app, mixes, store, logger)
+	app.Hooks().OnShutdown(func() error { mixes.Close(); return nil })
+	if len(shutdownContext) != 0 {
+		go func() { <-shutdownContext[0].Done(); mixes.Close() }()
+	}
 	app.Static("/assets", filepath.Join(cfg.WebDistDir, "assets"))
 	app.Get("/*", func(c *fiber.Ctx) error {
 		if strings.HasPrefix(c.Path(), "/api/") || filepath.Ext(c.Path()) != "" {

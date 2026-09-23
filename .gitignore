@@ -39,3 +39,5 @@ web/node_modules/
 web/dist/
 web/coverage/
 data/
+.pnpm-store/
+.gocache-*/

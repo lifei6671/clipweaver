@@ -14,6 +14,7 @@ import (
 )
 
 var ErrInvalidID = errors.New("INVALID_ID")
+var ErrCorruptManifest = errors.New("CORRUPT_MANIFEST")
 
 const sourceName = "source.bin"
 
@@ -34,7 +35,7 @@ func NewLocal(root string) (*Local, error) {
 	if err := os.MkdirAll(absolute, 0700); err != nil {
 		return nil, fmt.Errorf("create data root: %w", err)
 	}
-	for _, path := range []string{"assets", "tmp", filepath.Join("tmp", "uploads"), filepath.Join("tmp", "mixes")} {
+	for _, path := range []string{"assets", "mixes", "tmp", filepath.Join("tmp", "uploads"), filepath.Join("tmp", "mixes")} {
 		if err := ensureDirectory(filepath.Join(absolute, path)); err != nil {
 			return nil, fmt.Errorf("create data directory %s: %w", path, err)
 		}
@@ -280,7 +281,7 @@ func (s *Local) ReadAsset(id string) (domain.Asset, error) {
 	}
 	manifestID, err := canonicalID(manifest.ID)
 	if err != nil || manifestID != canonical {
-		return domain.Asset{}, fmt.Errorf("manifest asset ID mismatch: %w", ErrInvalidID)
+		return domain.Asset{}, errors.Join(ErrCorruptManifest, ErrInvalidID)
 	}
 	asset := domain.Asset{
 		ID: canonical, Kind: manifest.Kind, Name: manifest.Name,
@@ -305,4 +306,164 @@ func validateAsset(asset domain.Asset) error {
 		return errors.New("video dimensions must be positive")
 	}
 	return nil
+}
+
+func (s *Local) mixDir(id string) (string, string, error) {
+	canonical, err := canonicalID(id)
+	if err != nil {
+		return "", "", err
+	}
+	dir := filepath.Join(s.root, "mixes", canonical)
+	if info, err := os.Lstat(dir); err == nil {
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return "", "", fmt.Errorf("unsafe mix directory %s", canonical)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", "", err
+	}
+	return canonical, dir, nil
+}
+
+func (s *Local) SaveMixMeta(meta domain.MixMeta) error {
+	id, dir, err := s.mixDir(meta.ID)
+	if err != nil {
+		return err
+	}
+	if meta.Status != domain.MixStatusRendering && meta.Status != domain.MixStatusCompleted && meta.Status != domain.MixStatusFailed {
+		return errors.New("invalid mix status")
+	}
+	if err := os.Mkdir(dir, 0700); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	if _, _, err := s.mixDir(id); err != nil {
+		return err
+	}
+	meta.ID = id
+	return atomicJSON(dir, "meta.json", meta)
+}
+
+func (s *Local) SaveMixPlan(id string, plan domain.MixPlan) error {
+	_, dir, err := s.mixDir(id)
+	if err != nil {
+		return err
+	}
+	return atomicJSON(dir, "plan.json", plan)
+}
+
+func atomicJSON(dir, name string, value any) error {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, "."+name+"-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), filepath.Join(dir, name))
+}
+
+func (s *Local) ReadMixMeta(id string) (domain.MixMeta, error) {
+	canonical, dir, err := s.mixDir(id)
+	if err != nil {
+		return domain.MixMeta{}, err
+	}
+	var meta domain.MixMeta
+	if err := readMixJSON(filepath.Join(dir, "meta.json"), &meta); err != nil {
+		return domain.MixMeta{}, err
+	}
+	if meta.ID != canonical || (meta.Status != domain.MixStatusRendering && meta.Status != domain.MixStatusCompleted && meta.Status != domain.MixStatusFailed) {
+		return domain.MixMeta{}, errors.New("invalid mix metadata")
+	}
+	return meta, nil
+}
+
+func (s *Local) ReadMixPlan(id string) (domain.MixPlan, error) {
+	_, dir, err := s.mixDir(id)
+	if err != nil {
+		return domain.MixPlan{}, err
+	}
+	var plan domain.MixPlan
+	if err := readMixJSON(filepath.Join(dir, "plan.json"), &plan); err != nil {
+		return domain.MixPlan{}, err
+	}
+	if plan.TargetDurationUS <= 0 || plan.ClipDurationUS <= 0 || len(plan.Clips) == 0 {
+		return domain.MixPlan{}, errors.New("invalid mix plan")
+	}
+	return plan, nil
+}
+
+func readMixJSON(path string, value any) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("unsafe mix manifest")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, value)
+}
+
+func (s *Local) MixOutputPath(id string) (string, error) {
+	_, dir, err := s.mixDir(id)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "output.mp4"), nil
+}
+
+func (s *Local) RemoveMixStaging(id string) error {
+	id, err := canonicalID(id)
+	if err != nil {
+		return err
+	}
+	return os.RemoveAll(filepath.Join(s.root, "tmp", "mixes", id))
+}
+
+// OpenCompletedMixFile validates the persisted state and returns an open regular file.
+// The caller must close the returned handle.
+func (s *Local) OpenCompletedMixFile(id string) (*os.File, error) {
+	meta, err := s.ReadMixMeta(id)
+	if err != nil {
+		return nil, err
+	}
+	if meta.Status != domain.MixStatusCompleted {
+		return nil, os.ErrNotExist
+	}
+	path, err := s.MixOutputPath(id)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("unsafe mix output")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	opened, err := file.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
+		file.Close()
+		return nil, errors.New("unsafe mix output")
+	}
+	return file, nil
 }

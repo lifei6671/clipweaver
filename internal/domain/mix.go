@@ -3,6 +3,7 @@ package domain
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 var ErrInsufficientVideoDuration = errors.New("INSUFFICIENT_VIDEO_DURATION")
@@ -11,6 +12,25 @@ type MixRequest struct {
 	VideoIDs []string
 	AudioID  string
 	Seed     *int64
+}
+
+type MixStatus string
+
+const (
+	MixStatusRendering MixStatus = "rendering"
+	MixStatusCompleted MixStatus = "completed"
+	MixStatusFailed    MixStatus = "failed"
+)
+
+type MixMeta struct {
+	ID         string     `json:"id"`
+	Status     MixStatus  `json:"status"`
+	Seed       int64      `json:"seed"`
+	DurationUS DurationUS `json:"durationUs"`
+	VideoIDs   []string   `json:"videoIds"`
+	AudioID    string     `json:"audioId"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	ErrorCode  string     `json:"errorCode,omitempty"`
 }
 
 // PlannedClip uses the half-open source interval [StartUS, StartUS+DurationUS).

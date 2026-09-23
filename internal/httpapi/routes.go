@@ -12,3 +12,10 @@ func Register(app *fiber.App, assets assetService, logger *slog.Logger) {
 	app.Post("/api/assets/audio", h.audio)
 	app.Get("/api/assets", h.list)
 }
+
+func RegisterMixes(app *fiber.App, mixes mixService, files mixFiles, logger *slog.Logger) {
+	h := mixHandlers{service: mixes, files: files, logger: logger}
+	app.Post("/api/mixes", h.create)
+	app.Get("/api/mixes/:id/file", h.preview)
+	app.Get("/api/mixes/:id/download", h.download)
+}

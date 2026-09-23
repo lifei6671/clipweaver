@@ -30,7 +30,8 @@ TODO → IN_PROGRESS → REVIEW → PASS
 
 - TASK-002～TASK-008 可以基于已落盘的 TASK-001 工程骨架推进，并各自按任务卡完成宿主可执行测试与人工 Review。
 - TASK-001 的 Docker builder、Compose 启动、health、FFmpeg/FFprobe 与根页面验收仍必须补齐。
-- TASK-009 是硬门禁；开始 TASK-009 前，TASK-001 必须补齐全部 Docker 验收并标记 `PASS`。
+- TASK-005 已完成人工代码 Review，但因宿主缺少 FFmpeg/FFprobe，其真实媒体集成、rotation、100ms 时长实测和口播尾部人工试听仍后置；在这些项补齐前 TASK-005 保持 `REVIEW`。经人工确认，允许 TASK-006～TASK-008 基于当前 TASK-005 实现继续开发。
+- TASK-009 是硬门禁；开始 TASK-009 前，TASK-001 必须补齐全部 Docker 验收并标记 `PASS`，TASK-005 也必须补齐真实媒体验收并标记 `PASS`。
 - TASK-010 / TASK-011 的 clean-room Docker E2E 与最终交付要求保持不变。
 - 除上述 TASK-001 Docker 权限阻塞外，其他依赖仍遵守“前置任务必须 PASS”规则。
 
@@ -43,7 +44,7 @@ TODO → IN_PROGRESS → REVIEW → PASS
 | [TASK-003](TASK-003.md) | 本地存储与 FFprobe 媒体探测 | TASK-001 | PASS |
 | [TASK-004](TASK-004.md) | 素材上传与查询 API | TASK-003 | PASS |
 | [TASK-005](TASK-005.md) | FFmpeg 渲染执行器与输出验收 | TASK-002, TASK-003 | REVIEW |
-| [TASK-006](TASK-006.md) | Mix 编排服务与 HTTP API | TASK-002, TASK-004, TASK-005 | TODO |
+| [TASK-006](TASK-006.md) | Mix 编排服务与 HTTP API | TASK-002, TASK-004, TASK-005 | REVIEW |
 | [TASK-007](TASK-007.md) | 前端素材上传与选择流程 | TASK-004 | TODO |
 | [TASK-008](TASK-008.md) | 前端混剪、预览与下载流程 | TASK-006, TASK-007 | TODO |
 | [TASK-009](TASK-009.md) | Docker 交付与运行配置 | TASK-006, TASK-008 | TODO |
@@ -109,6 +110,6 @@ docker compose down
 - 每次开始任务前必须阅读 `../requirements-baseline.md`；实现、测试或任务卡与需求基线冲突时，任务必须转为 `BLOCKED`。
 - 技术设计可以比原题更严格，但不得通过实现便利性降低原题的功能、交付或验收要求。
 - 发现设计缺口时先更新技术设计或任务卡，再继续实现。
-- 后续任务不得依赖尚未 `PASS` 的前置任务；仅适用上文“开发期 Docker 验收延期例外”时，允许 TASK-002～TASK-008 暂时基于 TASK-001 已落盘骨架推进。
+- 后续任务不得依赖尚未 `PASS` 的前置任务；仅适用上文“开发期 Docker 验收延期例外”时，允许 TASK-002～TASK-008 暂时基于 TASK-001 已落盘骨架推进，并允许 TASK-006～TASK-008 暂时基于已完成人工代码 Review、但真实媒体验收后置的 TASK-005 推进。
 - 验收项必须可以通过命令、自动化测试、HTTP 响应、FFprobe 输出或明确 UI 操作复现。
 - 自动字幕不属于 v0.1 基础任务。
