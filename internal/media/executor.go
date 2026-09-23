@@ -96,7 +96,15 @@ func (e Executor) Execute(ctx context.Context, plan domain.MixPlan, videos map[s
 	if err := run("concat", concatArgs(manifest, silent)); err != nil {
 		return OutputInfo{}, err
 	}
-	if err := run("mux", muxArgs(silent, narration.StoredPath, outputPath, plan.TargetDurationUS)); err != nil {
+	normalizedNarration := filepath.Join(workDir, "narration.wav")
+	if err := run("narration-normalize", narrationNormalizeArgs(narration.StoredPath, normalizedNarration)); err != nil {
+		return OutputInfo{}, err
+	}
+	finalVideo := filepath.Join(workDir, "final-video.mp4")
+	if err := run("video-finalize", videoFinalizeArgs(silent, finalVideo, plan.TargetDurationUS)); err != nil {
+		return OutputInfo{}, err
+	}
+	if err := run("mux", muxArgs(finalVideo, normalizedNarration, outputPath, plan.TargetDurationUS)); err != nil {
 		return OutputInfo{}, err
 	}
 	return e.Validator.Validate(ctx, outputPath, plan.TargetDurationUS)

@@ -81,9 +81,20 @@ func concatArgs(manifest, output string) []string {
 		"-map", "0:v:0", "-an", "-c", "copy", output}
 }
 
-func muxArgs(silent, narration, output string, target domain.DurationUS) []string {
-	return []string{"-hide_banner", "-nostdin", "-v", "error", "-y", "-i", silent, "-i", narration,
-		"-filter_complex", "[0:v:0]tpad=stop=-1:stop_mode=clone[v];[1:a:0]asetpts=PTS-STARTPTS[a]",
-		"-map", "[v]", "-map", "[a]", "-t", secondsUS(target),
-		"-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "30", "-c:a", "aac", "-movflags", "+faststart", "-f", "mp4", output}
+func narrationNormalizeArgs(input, output string) []string {
+	// Rebuild timestamps from decoded samples without adding or repeating audio.
+	return []string{"-hide_banner", "-nostdin", "-v", "error", "-y", "-i", input,
+		"-map", "0:a:0", "-vn", "-af", "asetpts=N/SR/TB", "-c:a", "pcm_s16le", "-f", "wav", output}
+}
+
+func videoFinalizeArgs(silent, output string, target domain.DurationUS) []string {
+	return []string{"-hide_banner", "-nostdin", "-v", "error", "-y", "-i", silent,
+		"-map", "0:v:0", "-vf", "tpad=stop=-1:stop_mode=clone", "-t", secondsUS(target),
+		"-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "30", "-f", "mp4", output}
+}
+
+func muxArgs(video, narration, output string, target domain.DurationUS) []string {
+	return []string{"-hide_banner", "-nostdin", "-v", "error", "-y", "-i", video, "-i", narration,
+		"-map", "0:v:0", "-map", "1:a:0", "-t", secondsUS(target),
+		"-c:v", "copy", "-c:a", "aac", "-movflags", "+faststart", "-f", "mp4", output}
 }

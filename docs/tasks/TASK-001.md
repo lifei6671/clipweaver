@@ -72,7 +72,7 @@
 
 ### ISSUE-001 修复与 TASK-001 Docker 复验（2026-09-23）
 
-- ISSUE-001：**技术阻塞已关闭，待人工复核**。仅修改 `internal/server/app_test.go`：构造实际超过 1 MiB 限额的 multipart 请求，将完整 HTTP 请求预装进内存连接，调用实际 fasthttp `ServeConn`，读取其已写出的响应并断言 HTTP 413 与 `error.code=UPLOAD_TOO_LARGE`；随后同一 app 仍可响应 `/api/missing`。没有改动生产 BodyLimit、错误映射或上传上限。
+- ISSUE-001：**技术阻塞已关闭，人工 Review 已通过**。仅修改 `internal/server/app_test.go`：构造实际超过 1 MiB 限额的 multipart 请求，将完整 HTTP 请求预装进内存连接，调用实际 fasthttp `ServeConn`，读取其已写出的响应并断言 HTTP 413 与 `error.code=UPLOAD_TOO_LARGE`；随后同一 app 仍可响应 `/api/missing`。没有改动生产 BodyLimit、错误映射或上传上限。
 - 根因：fasthttp 在 `Content-Length > BodyLimit` 时先拒绝、写 413 并关闭连接；原测试的 Go HTTP 客户端仍在写 body，`Do` 可能先返回 `write: connection reset by peer`。Fiber `app.Test` 同样先返回 `ServeConn` 的 body-limit 错误，不读取已写出的 413，因此本测试用预装完整请求的内存连接读取真实公共响应。另用运行镜像的实际 HTTP multipart 请求验证网络端契约。
 - 定向测试：宿主 `go test ./internal/server -run '^TestBodyLimitUsesPublicError$' -count=20` 退出码 0，20 次 PASS；Linux `golang:1.25.14-bookworm` 容器执行同一命令，退出码 0，20 次 PASS。
 - 宿主全量测试：`go test ./... -count=1` 退出码 1；本次 ISSUE-001 用例通过，唯一失败为既有 `TestStaticPageAndSPAFallback` 在 Windows 清理 `TempDir/index.html` 时报告文件占用。该用例不在 ISSUE-001 范围内，未修改。Docker/Linux builder 的完整 Go 测试通过。
@@ -81,4 +81,4 @@
 - 根页面：Compose 容器内 `GET /` 返回 200 和 React 入口 HTML。宿主 8080 同时被其他进程占用，因此使用同一运行镜像的独立容器映射 18080 浏览器访问；页面实际显示视频上传、口播选择和混剪控件，容器日志记录 `/`、JS、CSS、`/api/assets` 均为 200；不将宿主 8080 浏览器结果算作 Compose 证据。
 - 实际超限 HTTP：同一正式运行镜像的独立限额容器设置 `MAX_UPLOAD_MB=1`，用容器内 `dd` 生成 2 MiB 文件、`curl -F file=@/tmp/oversize.bin` 上传 `/api/assets/audio`，收到 `HTTP/1.1 413 Request Entity Too Large` 和 `error.code=UPLOAD_TOO_LARGE`；随后 `GET /api/health` 为 200、`status=ok`。
 - 版本与交付文件：Dockerfile 锁定 Go 1.25.14、Node 22.23.2、pnpm 10.17.1、FFmpeg/FFprobe 7.1.1；`go.mod`、`go.sum`、`web/pnpm-lock.yaml`、Dockerfile、Compose、`.dockerignore` 均已跟踪。`git ls-files` 检查未见构建生成目录或运行期 data；本次检查的交付配置未见本机绝对路径或密钥。用户未跟踪的 `material/` 和最终验收报告未处理。
-- 状态：TASK-001 自身验收条件已形成运行证据，转 `REVIEW` 等待人工复核。修复尚未提交，当前 HEAD `dacc3530d25e148b90cde64c74333e7bdbf42b05`，本次 commit 为 `pending`；按任务索引规则，提交和复核前不标 `PASS`，TASK-009 硬门禁继续生效。
+- 最终收口：TASK-001 自身验收条件均已形成运行证据；ISSUE-001 实现及修复提交为 `62abe001a307f69355595f2d1ec40f9e508adbaa`，人工 Review 已通过。TASK-001 由 `REVIEW` 转为 `PASS`。以上历史 BLOCKED、Docker 权限问题和修复前失败记录保持原样，作为实际开发过程证据。

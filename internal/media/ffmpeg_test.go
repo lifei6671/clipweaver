@@ -35,14 +35,23 @@ func TestFFmpegArgumentContract(t *testing.T) {
 	if got := secondsUS(1_234_567); got != "1.234567" {
 		t.Fatalf("microseconds = %s", got)
 	}
-	mux := strings.Join(muxArgs("silent.mp4", "narration.m4a", "out.mp4", 4_500_001), " ")
-	for _, required := range []string{"-i silent.mp4 -i narration.m4a", "[0:v:0]tpad=stop=-1:stop_mode=clone[v]", "[1:a:0]asetpts=PTS-STARTPTS[a]", "-map [v] -map [a]", "-t 4.500001", "-c:v libx264", "-pix_fmt yuv420p", "-c:a aac", "-movflags +faststart", "-f mp4"} {
-		if !strings.Contains(mux, required) {
-			t.Errorf("missing %q: %s", required, mux)
-		}
+	normalize := narrationNormalizeArgs("source.mp3", "narration.wav")
+	if want := []string{"-hide_banner", "-nostdin", "-v", "error", "-y", "-i", "source.mp3", "-map", "0:a:0", "-vn", "-af", "asetpts=N/SR/TB", "-c:a", "pcm_s16le", "-f", "wav", "narration.wav"}; !reflect.DeepEqual(normalize, want) {
+		t.Fatalf("narration normalize args = %v", normalize)
 	}
-	if strings.Contains(mux, "-shortest") || strings.Contains(mux, "-noautorotate") {
-		t.Fatal(mux)
+	finalize := videoFinalizeArgs("silent.mp4", "final-video.mp4", 4_500_001)
+	if want := []string{"-hide_banner", "-nostdin", "-v", "error", "-y", "-i", "silent.mp4", "-map", "0:v:0", "-vf", "tpad=stop=-1:stop_mode=clone", "-t", "4.500001", "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "30", "-f", "mp4", "final-video.mp4"}; !reflect.DeepEqual(finalize, want) {
+		t.Fatalf("video finalize args = %v", finalize)
+	}
+	muxCommand := muxArgs("final-video.mp4", "narration.wav", "out.mp4", 4_500_001)
+	if want := []string{"-hide_banner", "-nostdin", "-v", "error", "-y", "-i", "final-video.mp4", "-i", "narration.wav", "-map", "0:v:0", "-map", "1:a:0", "-t", "4.500001", "-c:v", "copy", "-c:a", "aac", "-movflags", "+faststart", "-f", "mp4", "out.mp4"}; !reflect.DeepEqual(muxCommand, want) {
+		t.Fatalf("mux args = %v", muxCommand)
+	}
+	mux := strings.Join(muxCommand, " ")
+	for _, forbidden := range []string{"-filter_complex", "tpad", "asetpts", "apad", "aloop", "-stream_loop", "-shortest", "source.mp3", "silent.mp4"} {
+		if strings.Contains(mux, forbidden) {
+			t.Fatalf("mux contains %q: %s", forbidden, mux)
+		}
 	}
 }
 
@@ -64,6 +73,7 @@ func TestExecutorOrderAndCleanup(t *testing.T) {
 	e := NewExecutor("fake-ffmpeg", "fake-ffprobe")
 	var phases []string
 	var seenStarts []string
+	var silentVideo, normalizedNarration, finalVideo string
 	e.run = func(ctx context.Context, binary string, args ...string) (string, error) {
 		joined := strings.Join(args, " ")
 		if strings.Contains(joined, "trim=start=3:end=6") {
@@ -78,6 +88,7 @@ func TestExecutorOrderAndCleanup(t *testing.T) {
 		}
 		if strings.Contains(joined, " -f concat ") {
 			phase = "concat"
+			silentVideo = args[len(args)-1]
 			manifest := ""
 			for i, arg := range args {
 				if arg == "-i" {
@@ -93,6 +104,30 @@ func TestExecutorOrderAndCleanup(t *testing.T) {
 				t.Fatalf("concat manifest %q", data)
 			}
 		}
+		if strings.Contains(joined, " -f wav ") {
+			phase = "narration-normalize"
+			normalizedNarration = args[len(args)-1]
+			if !strings.Contains(joined, "-i "+audio.StoredPath) || filepath.Base(normalizedNarration) != "narration.wav" || filepath.Dir(normalizedNarration) != filepath.Dir(silentVideo) {
+				t.Fatalf("narration normalization inputs %v", args)
+			}
+		}
+		if strings.Contains(joined, "tpad=stop=-1:stop_mode=clone") {
+			phase = "video-finalize"
+			finalVideo = args[len(args)-1]
+			if !strings.Contains(joined, "-i "+silentVideo) || filepath.Base(finalVideo) != "final-video.mp4" || filepath.Dir(finalVideo) != filepath.Dir(silentVideo) || strings.Contains(joined, audio.StoredPath) {
+				t.Fatalf("video finalize inputs %v", args)
+			}
+		}
+		if phase == "mux" {
+			if !strings.Contains(joined, "-i "+finalVideo+" -i "+normalizedNarration) || strings.Contains(joined, audio.StoredPath) || strings.Contains(joined, videos["video-1"].StoredPath) {
+				t.Fatalf("mux inputs %v", args)
+			}
+			for _, path := range []string{silentVideo, normalizedNarration, finalVideo} {
+				if _, err := os.Stat(path); err != nil {
+					t.Fatalf("diagnostic input %s: %v", path, err)
+				}
+			}
+		}
 		phases = append(phases, phase)
 		if err := os.WriteFile(args[len(args)-1], []byte("x"), 0600); err != nil {
 			t.Fatal(err)
@@ -103,7 +138,7 @@ func TestExecutorOrderAndCleanup(t *testing.T) {
 	if _, err := e.Execute(context.Background(), plan, videos, audio, stage, output); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(phases, []string{"normalize", "normalize", "concat", "mux"}) || !reflect.DeepEqual(seenStarts, []string{"3", "0"}) {
+	if !reflect.DeepEqual(phases, []string{"normalize", "normalize", "concat", "narration-normalize", "video-finalize", "mux"}) || !reflect.DeepEqual(seenStarts, []string{"3", "0"}) {
 		t.Fatalf("phases %v starts %v", phases, seenStarts)
 	}
 	entries, err := os.ReadDir(stage)
@@ -112,6 +147,95 @@ func TestExecutorOrderAndCleanup(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].Name() != "output.mp4" {
 		t.Fatalf("stage contents %v", entries)
+	}
+}
+
+func TestExecutorNarrationNormalizationFailureCleansOutput(t *testing.T) {
+	plan, videos, audio, stage, output := testRenderInputs(t)
+	e := NewExecutor("fake", "fake")
+	var phases []string
+	e.run = func(_ context.Context, _ string, args ...string) (string, error) {
+		if strings.Contains(strings.Join(args, " "), " -f wav ") {
+			phases = append(phases, "narration-normalize")
+			if err := os.WriteFile(args[len(args)-1], []byte("partial"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(output, []byte("partial"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			return "decode failed", errors.New("exit status 1")
+		}
+		phases = append(phases, "earlier phase")
+		return "", os.WriteFile(args[len(args)-1], []byte("x"), 0600)
+	}
+	_, err := e.Execute(context.Background(), plan, videos, audio, stage, output)
+	var fferr *FFmpegError
+	if !errors.Is(err, ErrFFmpegFailed) || !errors.As(err, &fferr) || fferr.Phase != "narration-normalize" || fferr.Stderr != "decode failed" {
+		t.Fatalf("diagnostics = %v, %+v", err, fferr)
+	}
+	if !reflect.DeepEqual(phases, []string{"earlier phase", "earlier phase", "earlier phase", "narration-normalize"}) {
+		t.Fatalf("phases = %v", phases)
+	}
+	if _, err := os.Stat(output); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("output remains: %v", err)
+	}
+	entries, err := os.ReadDir(stage)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("stage entries %v, %v", entries, err)
+	}
+}
+
+func TestExecutorFinalStagesFailureCleansOutput(t *testing.T) {
+	for _, failPhase := range []string{"video-finalize", "mux"} {
+		t.Run(failPhase, func(t *testing.T) {
+			plan, videos, audio, stage, output := testRenderInputs(t)
+			e := NewExecutor("fake", "fake")
+			var phases []string
+			e.run = func(_ context.Context, _ string, args ...string) (string, error) {
+				joined := strings.Join(args, " ")
+				phase := "mux"
+				switch {
+				case strings.Contains(joined, " -f concat "):
+					phase = "concat"
+				case strings.Contains(joined, " -f wav "):
+					phase = "narration-normalize"
+				case strings.Contains(joined, "tpad=stop=-1:stop_mode=clone"):
+					phase = "video-finalize"
+				case strings.Contains(joined, " -vf "):
+					phase = "normalize"
+				}
+				phases = append(phases, phase)
+				if err := os.WriteFile(args[len(args)-1], []byte("partial"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if phase == failPhase {
+					if err := os.WriteFile(output, []byte("partial"), 0600); err != nil {
+						t.Fatal(err)
+					}
+					return "encode failed", errors.New("exit status 1")
+				}
+				return "", nil
+			}
+			_, err := e.Execute(context.Background(), plan, videos, audio, stage, output)
+			var fferr *FFmpegError
+			if !errors.Is(err, ErrFFmpegFailed) || !errors.As(err, &fferr) || fferr.Phase != failPhase || fferr.Stderr != "encode failed" {
+				t.Fatalf("diagnostics = %v, %+v", err, fferr)
+			}
+			wantPhases := []string{"normalize", "normalize", "concat", "narration-normalize", "video-finalize"}
+			if failPhase == "mux" {
+				wantPhases = append(wantPhases, "mux")
+			}
+			if !reflect.DeepEqual(phases, wantPhases) {
+				t.Fatalf("phases = %v", phases)
+			}
+			if _, err := os.Stat(output); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("output remains: %v", err)
+			}
+			entries, err := os.ReadDir(stage)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("stage entries %v, %v", entries, err)
+			}
+		})
 	}
 }
 

@@ -43,7 +43,7 @@
 - [x] 上传新口播不会要求服务端删除旧资产。
 - [x] API 错误可读，不展示原始后端堆栈。
 - [x] 刷新页面后已有 assets 可恢复。
-- [ ] 前端测试与 build 通过，并由 Docker builder 再次执行。
+- [x] 前端测试与 build 通过，并由 Docker builder 再次执行。
 
 ## 验收证据
 
@@ -55,3 +55,10 @@
 
 - 修改文件：`web/src/App.tsx`、`App.test.tsx`、`api.ts`、`types.ts`、`utils/formatDuration.ts`；本任务状态与证据回填在 `docs/tasks/README.md`、`TASK-007.md`。
 - 待验证：Docker builder 再次执行前端测试与 build；真实浏览器与实际媒体文件的交互验收后置。因此组合验收项保持未勾选，状态保持 `REVIEW`。
+
+### 2026-09-23 Docker builder 与真实浏览器续验（当前状态：PASS）
+
+- 正式 Dockerfile 无缓存构建日志（TASK-001 / ISSUE-001 复验）实际显示前端 `31/31` tests PASS、`tsc --noEmit && vite build` PASS，Go builder 的 `go test ./...` 与 runtime image 构建也 PASS；已提交实现 commit `566cf5bfe095d3f068d8c324d19b7c62d32c742c`。
+- 正式运行镜像的独立 Compose project `clipweaver-real-media` healthy。Codex 内置真实浏览器一次选择 `7681245340850422643-hd.mp4`、`7671387297355924681-hd.mp4`、`7629753801633876323-hd.mp4`、`7684871670289046154-hd.mp4` 四个 `material/` 原始视频；页面立即逐项显示 `uploading`，随后均显示 `ready` 和服务端时长 28.2、19.1、16.1、7.5 秒。勾选/取消令“已选视频”在 4/3 间变化。
+- 通过页面上传原始 `7685603214562115578.mp3`，先显示 `uploading`，再显示 `ready · 59.3 秒`，当前口播单选。另上传原 MP3 的短副本后，新音频自动成为唯一已选口播，旧资产仍在列表。刷新后 `GET /api/assets` 恢复这些已上传资产，视频和口播当前选择均按设计清空并可重新建立。浏览器 Console `error` 列表为空。
+- 上述“待验证”段记录开发期历史状态；本次全部验收项有真实证据，TASK-007 从 REVIEW 转 PASS。`material/` 原文件未改动。
