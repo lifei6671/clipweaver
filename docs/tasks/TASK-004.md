@@ -47,7 +47,7 @@
 ## 验收证据
 
 - 修改文件：internal/service/asset.go 及测试、internal/httpapi/{handlers,routes,errors}.go 及测试、internal/storage/local.go 及测试、internal/server/app.go 及测试、本任务卡和任务索引。
-- Commit：pending（Codex 沙箱不能写 .git；未 add/commit/push）。
+- Commit：14181956a6958ffdbdbf578d8f4e9e2ad501007c（实现提交；2026-09-23 已完成人工 Review 并确认通过）。
 - API 测试命令：设置 GOCACHE=$env:TEMP\clipweaver-go-cache 后，go test ./internal/service/... ./internal/httpapi/... -count=1 PASS；go test ./internal/storage/... ./internal/media/... ./internal/service/... ./internal/httpapi/... -count=1 PASS；go test ./internal/server/... -run '^TestBodyLimitUsesPublicError$' -count=1 PASS；go vet ./internal/storage/... ./internal/media/... ./internal/service/... ./internal/httpapi/... ./internal/server/... PASS。默认 Go 缓存目录在此沙箱中 Access is denied，故使用可写临时缓存。
 - 全量测试：go test ./internal/server/... -count=1 和 go test ./... -count=1 均 FAIL，唯一失败为已有 TestStaticPageAndSPAFallback 在 Windows t.TempDir 清理时 index.html 被占用；新增 BodyLimit 真实 HTTP 测试单独 PASS。未将全量测试记为通过。
 - 部分成功响应：TestVideoPartialFailureAndUnsafeNames 断言 HTTP 200、items 中 ready + failed、失败 code=INVALID_VIDEO；TestVideoBatchAndDiskReload 断言两个不同 UUID、名称、durationUs 和最终 source.bin/meta.json。

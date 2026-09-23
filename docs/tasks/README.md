@@ -41,8 +41,8 @@ TODO → IN_PROGRESS → REVIEW → PASS
 | [TASK-001](TASK-001.md) | 工程骨架与运行基线 | - | BLOCKED |
 | [TASK-002](TASK-002.md) | 领域模型与确定性 Mix Planner | TASK-001 | PASS |
 | [TASK-003](TASK-003.md) | 本地存储与 FFprobe 媒体探测 | TASK-001 | PASS |
-| [TASK-004](TASK-004.md) | 素材上传与查询 API | TASK-003 | REVIEW |
-| [TASK-005](TASK-005.md) | FFmpeg 渲染执行器与输出验收 | TASK-002, TASK-003 | TODO |
+| [TASK-004](TASK-004.md) | 素材上传与查询 API | TASK-003 | PASS |
+| [TASK-005](TASK-005.md) | FFmpeg 渲染执行器与输出验收 | TASK-002, TASK-003 | REVIEW |
 | [TASK-006](TASK-006.md) | Mix 编排服务与 HTTP API | TASK-002, TASK-004, TASK-005 | TODO |
 | [TASK-007](TASK-007.md) | 前端素材上传与选择流程 | TASK-004 | TODO |
 | [TASK-008](TASK-008.md) | 前端混剪、预览与下载流程 | TASK-006, TASK-007 | TODO |
