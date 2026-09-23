@@ -80,7 +80,7 @@ TODO → IN_PROGRESS → REVIEW → PASS
 | [TASK-008](TASK-008.md) | 前端混剪、预览与下载流程 | TASK-006, TASK-007 | PASS |
 | [TASK-009](TASK-009.md) | Docker 交付与运行配置 | TASK-006, TASK-008 | PASS |
 | [TASK-010](TASK-010.md) | 可复现测试素材与 Docker E2E | TASK-009 | PASS |
-| [TASK-011](TASK-011.md) | README、AI 协作记录与最终交付 | TASK-010 | TODO |
+| [TASK-011](TASK-011.md) | README、AI 协作记录与最终交付 | TASK-010 | IN_PROGRESS |
 
 ## 推荐推进顺序
 
