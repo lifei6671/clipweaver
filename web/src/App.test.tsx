@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { App } from "./App";
-import { ApiError, deleteVideoAsset, getAssets, mixAssets, uploadAudio, uploadVideos } from "./api";
+import { ApiError, deleteAsset, getAssets, mixAssets, uploadAudio, uploadVideos } from "./api";
 import { formatDuration } from "./utils/formatDuration";
 
 afterEach(() => {
@@ -94,11 +94,139 @@ test("restores assets and server durations without restoring selections", async 
   expect(screen.queryByText("下载")).toBeNull();
 });
 
+test("video rows show a status tag and structured metadata", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({ items: [video("v1")] })));
+  render(<App />);
+  const list = screen.getByRole("list", { name: "视频素材列表" });
+  const row = (await screen.findByText("v1.mp4")).closest("li");
+  expect(list.classList.contains("media-list")).toBe(true);
+  expect(row?.classList.contains("media-row")).toBe(true);
+  expect(within(row!).getByRole("checkbox", { name: "选择视频 v1.mp4" })).toBeTruthy();
+  expect(within(row!).getByText("ready").classList.contains("status-tag")).toBe(true);
+  expect(within(row!).getByText("9.7 秒")).toBeTruthy();
+});
+
+test("audio rows separate selection, status, duration and removal", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({ items: [audio("a1")] })));
+  render(<App />);
+  const row = (await screen.findByText("a1.m4a")).closest("li");
+  expect(row?.classList.contains("audio-row")).toBe(true);
+  expect(within(row!).getByRole("radio", { name: "选择口播 a1.m4a" })).toBeTruthy();
+  expect(within(row!).getByText("ready").classList.contains("status-tag")).toBe(true);
+  expect(within(row!).getByText("4.5 秒")).toBeTruthy();
+  expect(within(row!).getByRole("button", { name: "删除口播 a1.m4a" }).classList.contains("media-action")).toBe(true);
+});
+
+test("video and audio actions stay in their section toolbars", () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({ items: [] })));
+  const { container } = render(<App />);
+  const videoToolbar = container.querySelector<HTMLElement>(".video-toolbar");
+  const audioToolbar = container.querySelector<HTMLElement>(".audio-toolbar");
+  expect(within(videoToolbar!).getByText("已选 0 个视频")).toBeTruthy();
+  expect(within(videoToolbar!).getByRole("button", { name: "重置选择" })).toBeTruthy();
+  expect(within(videoToolbar!).getByRole("button", { name: "清空视频" })).toBeTruthy();
+  expect(within(audioToolbar!).getByRole("button", { name: "选择口播音频文件" })).toBeTruthy();
+  expect(within(audioToolbar!).getByRole("button", { name: "清空口播" })).toBeTruthy();
+});
+
 test("restores duplicate video IDs only once", async () => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({ items: [video("v1"), video("v1")] })));
   render(<App />);
   await screen.findByText("v1.mp4");
   expect(within(screen.getByRole("list", { name: "视频素材列表" })).getAllByRole("listitem")).toHaveLength(1);
+});
+
+test("deletes an unselected audio without changing the selected one", async () => {
+  const fetchMock = vi.fn().mockResolvedValueOnce(json({ items: [video("v1"), audio("a1"), audio("a2")] }))
+    .mockResolvedValueOnce(json({ id: "a2", deleted: true }));
+  vi.stubGlobal("fetch", fetchMock);
+  render(<App />);
+  await selectMixAssets();
+  fireEvent.click(screen.getByRole("button", { name: "删除口播 a2.m4a" }));
+  await waitFor(() => expect(screen.queryByRole("radio", { name: "选择口播 a2.m4a" })).toBeNull());
+  expect(fetchMock.mock.calls[1][0]).toBe("/api/assets/a2");
+  expect(fetchMock.mock.calls[1][1].method).toBe("DELETE");
+  expect(screen.getByRole<HTMLInputElement>("radio", { name: "选择口播 a1.m4a" }).checked).toBe(true);
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "开始混剪" }).disabled).toBe(false);
+});
+
+test("deleting selected audio clears selection, mix result and mix error", async () => {
+  const fetchMock = vi.fn().mockResolvedValueOnce(json({ items: [video("v1"), audio("a1")] }))
+    .mockResolvedValueOnce(json(completed("first")))
+    .mockResolvedValueOnce(json({ error: { code: "MIX_TIMEOUT" } }, 504))
+    .mockResolvedValueOnce(json({ id: "a1", deleted: true }));
+  vi.stubGlobal("fetch", fetchMock);
+  render(<App />);
+  await selectMixAssets();
+  fireEvent.click(screen.getByRole("button", { name: "开始混剪" }));
+  await screen.findByLabelText("成片预览");
+  fireEvent.click(screen.getByRole("button", { name: "重新制作" }));
+  await screen.findByText("混剪超时，请重试");
+  fireEvent.click(screen.getByRole("button", { name: "删除口播 a1.m4a" }));
+  await waitFor(() => expect(screen.queryByRole("radio", { name: "选择口播 a1.m4a" })).toBeNull());
+  expect(screen.queryByLabelText("成片预览")).toBeNull();
+  expect(screen.queryByText("混剪超时，请重试")).toBeNull();
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "开始混剪" }).disabled).toBe(true);
+});
+
+test("failed audio deletion retains the row and shows a card error", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(json({ items: [audio("a1")] }))
+    .mockResolvedValueOnce(json({ error: { code: "ASSET_NOT_FOUND" } }, 404)));
+  render(<App />);
+  await screen.findByRole("button", { name: "删除口播 a1.m4a" });
+  fireEvent.click(screen.getByRole("button", { name: "删除口播 a1.m4a" }));
+  const alert = await screen.findByRole("alert");
+  expect(alert.classList.contains("ant-alert-error")).toBe(true);
+  expect(alert.textContent).toContain("所选素材不存在");
+  expect(screen.getByRole("radio", { name: "选择口播 a1.m4a" })).toBeTruthy();
+});
+
+test("clear audio deletes visible assets in order and preserves videos and seed", async () => {
+  const fetchMock = vi.fn().mockResolvedValueOnce(json({ items: [video("v1"), audio("a1"), audio("a2")] }))
+    .mockResolvedValueOnce(json({ id: "a1", deleted: true }))
+    .mockResolvedValueOnce(json({ id: "a2", deleted: true }));
+  vi.stubGlobal("fetch", fetchMock);
+  render(<App />);
+  await selectMixAssets();
+  fireEvent.change(screen.getByRole("textbox", { name: "随机种子（可选）" }), { target: { value: "42" } });
+  fireEvent.click(screen.getByRole("button", { name: "清空口播" }));
+  await waitFor(() => expect(within(screen.getByRole("list", { name: "口播音频列表" })).queryAllByRole("listitem")).toHaveLength(0));
+  expect(fetchMock.mock.calls.slice(1).map(([url, init]) => [url, init.method])).toEqual([
+    ["/api/assets/a1", "DELETE"], ["/api/assets/a2", "DELETE"],
+  ]);
+  expect(screen.getByRole("checkbox", { name: "选择视频 v1.mp4" })).toBeTruthy();
+  expect(screen.getByRole<HTMLInputElement>("textbox", { name: "随机种子（可选）" }).value).toBe("42");
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "开始混剪" }).disabled).toBe(true);
+});
+
+test("clear audio treats 404 as deleted and continues", async () => {
+  const fetchMock = vi.fn().mockResolvedValueOnce(json({ items: [audio("a1"), audio("a2")] }))
+    .mockResolvedValueOnce(json({ error: { code: "ASSET_NOT_FOUND" } }, 404))
+    .mockResolvedValueOnce(json({ id: "a2", deleted: true }));
+  vi.stubGlobal("fetch", fetchMock);
+  render(<App />);
+  await screen.findByRole("button", { name: "删除口播 a2.m4a" });
+  fireEvent.click(screen.getByRole("button", { name: "清空口播" }));
+  await waitFor(() => expect(screen.queryByRole("radio", { name: "选择口播 a2.m4a" })).toBeNull());
+  expect(fetchMock.mock.calls.slice(1).map(([url]) => url)).toEqual(["/api/assets/a1", "/api/assets/a2"]);
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+test("clear audio retains failed and unprocessed rows on partial failure", async () => {
+  const fetchMock = vi.fn().mockResolvedValueOnce(json({ items: [audio("a1"), audio("a2"), audio("a3")] }))
+    .mockResolvedValueOnce(json({ id: "a1", deleted: true }))
+    .mockResolvedValueOnce(json({ error: { code: "INTERNAL_ERROR" } }, 500));
+  vi.stubGlobal("fetch", fetchMock);
+  render(<App />);
+  await screen.findByRole("button", { name: "删除口播 a3.m4a" });
+  fireEvent.click(screen.getByRole("radio", { name: "选择口播 a1.m4a" }));
+  fireEvent.click(screen.getByRole("button", { name: "清空口播" }));
+  const alert = await screen.findByRole("alert");
+  expect(alert.classList.contains("ant-alert-error")).toBe(true);
+  expect(screen.queryByRole("radio", { name: "选择口播 a1.m4a" })).toBeNull();
+  expect(screen.getByRole("radio", { name: "选择口播 a2.m4a" })).toBeTruthy();
+  expect(screen.getByRole("radio", { name: "选择口播 a3.m4a" })).toBeTruthy();
+  expect(fetchMock.mock.calls.slice(1).map(([url]) => url)).toEqual(["/api/assets/a1", "/api/assets/a2"]);
 });
 
 test("deleting a selected video clears stale mix result and error", async () => {
@@ -306,7 +434,7 @@ test("mixing disables video removal and reset", async () => {
 
 test("delete API validates success payload", async () => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(json({ id: "wrong", deleted: true })));
-  await expect(deleteVideoAsset("v1")).rejects.toThrow("请求失败，请稍后重试");
+  await expect(deleteAsset("v1")).rejects.toThrow("请求失败，请稍后重试");
 });
 
 test("restores a poster and falls back when its image fails", async () => {
@@ -444,7 +572,7 @@ test("keeps partial failures separate and selects only ready videos", async () =
   expect(screen.getByRole("checkbox", { name: "选择视频 good.mp4" })).toBeTruthy();
   expect(screen.queryByRole("checkbox", { name: "选择视频 bad.mp4" })).toBeNull();
   expect(screen.getByText("未检测到有效视频流")).toBeTruthy();
-  expect(screen.getByText("failed").classList.contains("ant-typography-danger")).toBe(true);
+  expect(screen.getByText("failed").classList.contains("status-tag")).toBe(true);
   expect(screen.getByText("未检测到有效视频流").classList.contains("ant-typography-danger")).toBe(true);
   expect(screen.getByRole("img", { name: "视频封面占位 bad.mp4" })).toBeTruthy();
   expect(screen.queryByText(/server\/path/)).toBeNull();
@@ -513,6 +641,127 @@ test("audio picker sends only one file when several are dropped", async () => {
   pending.resolve(json({ filename: "first.m4a", status: "ready", asset: audio("a1", "first.m4a") }));
   await screen.findByRole("radio", { name: "选择口播 first.m4a" });
   expect(screen.queryByText(/second.m4a/)).toBeNull();
+});
+
+test("audio upload progress waits for server response and then hides", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({ items: [video("v1"), audio("old")] })));
+  MockXHR.autoRespond = false;
+  const { container } = render(<App />);
+  await screen.findByRole("radio", { name: "选择口播 old.m4a" });
+  fireEvent.click(screen.getByRole("checkbox", { name: "选择视频 v1.mp4" }));
+  fireEvent.click(screen.getByRole("radio", { name: "选择口播 old.m4a" }));
+  fireEvent.change(fileInput(container, 1), { target: { files: [new File(["a"], "new.m4a")] } });
+  const xhr = MockXHR.instances[0];
+  expect(screen.getByText("上传中 0%")).toBeTruthy();
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "开始混剪" }).disabled).toBe(true);
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "清空口播" }).disabled).toBe(true);
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "删除口播 old.m4a" }).disabled).toBe(true);
+  xhr.progress(50, 100);
+  await screen.findByText("上传中 50%");
+  xhr.progress(100, 100);
+  await screen.findByText("上传完成，处理中");
+  expect(screen.queryByRole("radio", { name: "选择口播 new.m4a" })).toBeNull();
+  xhr.respond(200, { filename: "new.m4a", status: "ready", asset: audio("new", "new.m4a") });
+  await screen.findByRole("radio", { name: "选择口播 new.m4a" });
+  await waitFor(() => expect(screen.queryByText("上传完成，处理中")).toBeNull());
+});
+
+test("audio upload failure hides progress and clear removes its local error", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({ items: [] })));
+  MockXHR.autoRespond = false;
+  const { container } = render(<App />);
+  fireEvent.change(fileInput(container, 1), { target: { files: [new File(["a"], "bad.m4a")] } });
+  MockXHR.instances[0].progress(50, 100);
+  await screen.findByText("上传中 50%");
+  MockXHR.instances[0].respond(413, "raw response");
+  await screen.findByText(/文件超过上传限制/);
+  await waitFor(() => expect(screen.queryByText("上传中 50%")).toBeNull());
+  fireEvent.click(screen.getByRole("button", { name: "清空口播" }));
+  await waitFor(() => expect(screen.queryByText(/文件超过上传限制/)).toBeNull());
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "清空口播" }).disabled).toBe(true);
+});
+
+test("clear audio loading disables upload, row deletion and mixing", async () => {
+  const pending = deferred<Response>();
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(json({ items: [video("v1"), audio("a1")] }))
+    .mockImplementationOnce(() => pending.promise));
+  render(<App />);
+  await selectMixAssets();
+  fireEvent.click(screen.getByRole("button", { name: "清空口播" }));
+  const clear = screen.getByRole<HTMLButtonElement>("button", { name: /清空口播/ });
+  expect(clear.classList.contains("ant-btn-loading")).toBe(true);
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "选择口播音频文件" }).disabled).toBe(true);
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "删除口播 a1.m4a" }).disabled).toBe(true);
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "开始混剪" }).disabled).toBe(true);
+  pending.resolve(json({ id: "a1", deleted: true }));
+  await waitFor(() => expect(screen.queryByRole("radio", { name: "选择口播 a1.m4a" })).toBeNull());
+});
+
+test("audio delete and mixing disable clear", async () => {
+  const pendingDelete = deferred<Response>();
+  const pendingMix = deferred<Response>();
+  const fetchMock = vi.fn().mockResolvedValueOnce(json({ items: [video("v1"), audio("a1"), audio("a2")] }))
+    .mockImplementationOnce(() => pendingDelete.promise)
+    .mockImplementationOnce(() => pendingMix.promise);
+  vi.stubGlobal("fetch", fetchMock);
+  render(<App />);
+  await selectMixAssets();
+  fireEvent.click(screen.getByRole("button", { name: "删除口播 a2.m4a" }));
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "清空口播" }).disabled).toBe(true);
+  pendingDelete.resolve(json({ id: "a2", deleted: true }));
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "清空口播" }).disabled).toBe(false));
+  fireEvent.click(screen.getByRole("button", { name: "开始混剪" }));
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "清空口播" }).disabled).toBe(true);
+  pendingMix.resolve(json(completed()));
+  await screen.findByLabelText("成片预览");
+});
+
+test("XHR audio upload reports monotonic progress and validates success", async () => {
+  MockXHR.autoRespond = false;
+  const progress = vi.fn();
+  const file = new File(["a"], "a.m4a");
+  const promise = uploadAudio(file, undefined, progress);
+  const xhr = MockXHR.instances[0];
+  expect(xhr.method).toBe("POST");
+  expect(xhr.url).toBe("/api/assets/audio");
+  expect(xhr.body?.getAll("file")).toEqual([file]);
+  xhr.progress(50, 100);
+  xhr.progress(40, 100);
+  xhr.progress(100, 100);
+  expect(progress.mock.calls.map(([value]) => value.percent)).toEqual([50, 50, 100]);
+  xhr.respond(200, { filename: "a.m4a", status: "ready", asset: audio("a1") });
+  await expect(promise).resolves.toMatchObject({ status: "ready", asset: { id: "a1" } });
+});
+
+test("XHR audio upload maps API, network, abort and malformed responses", async () => {
+  MockXHR.autoRespond = false;
+  const file = new File(["a"], "a.m4a");
+  let promise = uploadAudio(file);
+  MockXHR.instances.at(-1)!.respond(413, "not json");
+  await expect(promise).rejects.toThrow("文件超过上传限制");
+  promise = uploadAudio(file);
+  MockXHR.instances.at(-1)!.respond(422, { error: { code: "INVALID_AUDIO", message: "private" } });
+  await expect(promise).rejects.toMatchObject({ code: "INVALID_AUDIO", message: "未检测到有效音频流" });
+  promise = uploadAudio(file);
+  MockXHR.instances.at(-1)!.respond(500, "<html>private</html>");
+  await expect(promise).rejects.toThrow("请求失败，请稍后重试");
+  promise = uploadAudio(file);
+  MockXHR.instances.at(-1)!.onerror?.();
+  await expect(promise).rejects.toThrow("网络连接失败，请稍后重试");
+  promise = uploadAudio(file);
+  MockXHR.instances.at(-1)!.respond(200, { filename: "a.m4a", status: "ready", asset: { id: "a1" } });
+  await expect(promise).rejects.toThrow("请求失败，请稍后重试");
+  const alreadyAborted = new AbortController();
+  alreadyAborted.abort();
+  const count = MockXHR.instances.length;
+  await expect(uploadAudio(file, alreadyAborted.signal)).rejects.toMatchObject({ name: "AbortError" });
+  expect(MockXHR.instances).toHaveLength(count);
+  const controller = new AbortController();
+  promise = uploadAudio(file, controller.signal);
+  const xhr = MockXHR.instances.at(-1)!;
+  controller.abort();
+  await expect(promise).rejects.toMatchObject({ name: "AbortError" });
+  expect(xhr.aborted).toBe(true);
 });
 
 test("late GET merges with uploaded rows without clearing new selection", async () => {

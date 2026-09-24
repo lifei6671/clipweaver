@@ -257,7 +257,7 @@ func TestMixFileRangeDownloadAndReload(t *testing.T) {
 	mixError(t, call(t, reloaded, httptest.NewRequest(http.MethodGet, "/api/mixes/"+id+"/file", nil), 404), "MIX_NOT_FOUND")
 }
 
-func TestCompletedMixOutputSurvivesVideoDeletion(t *testing.T) {
+func TestCompletedMixOutputSurvivesAssetDeletion(t *testing.T) {
 	root := t.TempDir()
 	app, store, _, videoID, audioID := mixHTTPFixture(t, root, nil, nil)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -265,6 +265,12 @@ func TestCompletedMixOutputSurvivesVideoDeletion(t *testing.T) {
 	result := mixPost(t, app, `{"videoIds":["`+videoID+`"],"audioId":"`+audioID+`"}`, 200)
 	mixID := result["id"].(string)
 	call(t, app, httptest.NewRequest(http.MethodDelete, "/api/assets/"+videoID, nil), 200)
+	call(t, app, httptest.NewRequest(http.MethodDelete, "/api/assets/"+audioID, nil), 200)
+	for _, name := range []string{"meta.json", "plan.json", "output.mp4"} {
+		if _, err := os.Stat(filepath.Join(root, "mixes", mixID, name)); err != nil {
+			t.Fatalf("completed mix %s missing after asset deletion: %v", name, err)
+		}
+	}
 	for _, suffix := range []string{"file", "download"} {
 		resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/api/mixes/"+mixID+"/"+suffix, nil), -1)
 		if err != nil {

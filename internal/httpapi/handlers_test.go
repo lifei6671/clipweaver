@@ -288,9 +288,50 @@ func TestDeleteVideoRemovesDigestGroupAndKeepsOtherAssets(t *testing.T) {
 		id, code string
 		status   int
 	}{
-		{audioID, "INVALID_REQUEST", 400},
 		{"not-a-uuid", "INVALID_ID", 400},
 		{firstID, "ASSET_NOT_FOUND", 404},
+	} {
+		result := call(t, app, httptest.NewRequest(http.MethodDelete, "/api/assets/"+tc.id, nil), tc.status)
+		if got := item(t, result["error"])["code"]; got != tc.code {
+			t.Fatalf("delete %s: code=%v want=%s", tc.id, got, tc.code)
+		}
+	}
+}
+
+func TestDeleteAudioRemovesOnlyTarget(t *testing.T) {
+	root := t.TempDir()
+	app := testApp(t, root)
+	videoResult := items(t, call(t, app, uploadRequest(t, "/api/assets/videos", "files", testFile{"clip.mp4", "video"}), 200))
+	videoID := item(t, item(t, videoResult[0])["asset"])["id"].(string)
+	first := item(t, call(t, app, uploadRequest(t, "/api/assets/audio", "file", testFile{"first.m4a", "same"}), 200)["asset"])["id"].(string)
+	second := item(t, call(t, app, uploadRequest(t, "/api/assets/audio", "file", testFile{"second.m4a", "same"}), 200)["asset"])["id"].(string)
+	if first == second {
+		t.Fatal("same-content audio uploads must have distinct IDs")
+	}
+	if got := call(t, app, httptest.NewRequest(http.MethodDelete, "/api/assets/"+first, nil), 200); got["id"] != first || got["deleted"] != true {
+		t.Fatalf("delete response = %#v", got)
+	}
+	store, err := storage.NewLocal(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReadAsset(first); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("deleted audio remains: %v", err)
+	}
+	for _, id := range []string{second, videoID} {
+		if _, err := store.ReadAsset(id); err != nil {
+			t.Fatalf("unrelated asset %s missing: %v", id, err)
+		}
+	}
+	if listed := items(t, call(t, app, httptest.NewRequest(http.MethodGet, "/api/assets", nil), 200)); len(listed) != 2 {
+		t.Fatalf("assets after audio deletion = %#v", listed)
+	}
+	for _, tc := range []struct {
+		id, code string
+		status   int
+	}{
+		{first, "ASSET_NOT_FOUND", 404},
+		{"not-a-uuid", "INVALID_ID", 400},
 	} {
 		result := call(t, app, httptest.NewRequest(http.MethodDelete, "/api/assets/"+tc.id, nil), tc.status)
 		if got := item(t, result["error"])["code"]; got != tc.code {

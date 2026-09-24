@@ -17,7 +17,7 @@ type assetService interface {
 	UploadVideo(context.Context, string, io.Reader) (domain.Asset, error)
 	UploadAudio(context.Context, string, io.Reader) (domain.Asset, error)
 	ListAssets() ([]domain.Asset, error)
-	DeleteVideo(string) (string, error)
+	DeleteAsset(string) (string, error)
 	OpenPoster(string) (*os.File, error)
 }
 
@@ -156,8 +156,8 @@ func (h handlers) list(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"items": items})
 }
 
-func (h handlers) deleteVideo(c *fiber.Ctx) error {
-	id, err := h.assets.DeleteVideo(c.Params("id"))
+func (h handlers) deleteAsset(c *fiber.Ctx) error {
+	id, err := h.assets.DeleteAsset(c.Params("id"))
 	if err != nil {
 		return writeError(c, err, h.logger)
 	}

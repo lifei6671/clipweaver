@@ -102,10 +102,23 @@ func (s *AssetService) ListAssets() ([]domain.Asset, error) {
 	return visible, nil
 }
 
-func (s *AssetService) DeleteVideo(id string) (string, error) {
+func (s *AssetService) DeleteAsset(id string) (string, error) {
+	asset, err := s.store.ReadAsset(id)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", ErrAssetNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	if asset.Kind == domain.AssetKindAudio {
+		if err := s.store.RemoveAsset(asset.ID); err != nil {
+			return "", err
+		}
+		return asset.ID, nil
+	}
 	s.videoMu.Lock()
 	defer s.videoMu.Unlock()
-	asset, err := s.store.ReadAsset(id)
+	asset, err = s.store.ReadAsset(id)
 	if errors.Is(err, os.ErrNotExist) {
 		return "", ErrAssetNotFound
 	}

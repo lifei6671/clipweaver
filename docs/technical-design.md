@@ -604,9 +604,9 @@ FFmpeg 命令构建测试还必须证明 mux 阶段只映射 `final-video.mp4` �
 
 ### DELETE /api/assets/:id
 
-持久化删除 video asset，成功返回 `200 {"id":"<asset-id>","deleted":true}`。非法 UUID 返回 `400 INVALID_ID`，不存在返回 `404 ASSET_NOT_FOUND`，audio asset 返回 `400 INVALID_REQUEST`。
+持久化删除 video 或 audio asset，成功返回 `200 {"id":"<asset-id>","deleted":true}`。非法 UUID 返回 `400 INVALID_ID`，不存在返回 `404 ASSET_NOT_FOUND`。
 
-服务层在与视频上传、列表共用的 `videoMu` 内先用 `ReadAsset` 校验目标，再按 `ContentSHA256` 找出同源历史 video duplicate，并逐个调用安全的 `RemoveAsset` 删除整个目录（含源文件、元数据和可选封面）。这避免删除 canonical 后旧 duplicate 在列表中复活；同名但摘要不同的素材不受影响。删除中途失败会返回内部错误并记录日志；本地文件系统 v0.1 不提供事务回滚，已删部分可能无法恢复。
+服务层先用 `ReadAsset` 校验目标。video 在与上传、列表共用的 `videoMu` 内重新读取，再按 `ContentSHA256` 找出同源历史 video duplicate，并逐个调用安全的 `RemoveAsset` 删除整个目录（含源文件、元数据和可选封面）。video 整组删除可避免 canonical 删除后旧 duplicate 在列表中复活；同名但摘要不同的素材不受影响。audio 只对目标调用 `RemoveAsset`，不按内容去重或删除同内容音频，也不占用 `videoMu` 执行删除。删除中途失败会返回内部错误并记录日志；本地文件系统 v0.1 不提供事务回滚，已删部分可能无法恢复。
 
 历史 MixMeta/Plan 可以保留被删素材 ID；已完成 mix 继续从独立的 `output.mp4` 提供预览和下载，不级联删除。当前产品不提供重新执行历史 mix。
 
@@ -710,7 +710,7 @@ v0.1 使用单页面：
 
 口播音频
   ├─ 上传 / 选择当前 selectedAudioId
-  └─ 名称 / 时长
+  └─ 名称 / 时长 / 单条删除 / 清空当前页面口播
 
 操作区
   └─ 开始混剪
@@ -731,10 +731,12 @@ v0.1 使用单页面：
 - 页面刷新后恢复 assets，但 v0.1 不恢复上一次页面中的 mix 结果展示；这属于 README 已知限制。
 - 视频缩略图使用后端 `posterUrl`；封面生成失败或图片加载失败时显示占位，仍保留选择、状态、错误与服务端时长。
 - 视频上传前仅用浏览器 File.type 的非空 MIME 快速过滤明确非视频文件；MIME 为空仍上传，后端 FFprobe 是最终媒体校验依据，不以扩展名判断。
-- 视频 multipart 上传使用原生 XMLHttpRequest 的 `upload.onprogress` 展示批次真实字节进度，不为单文件伪造进度；音频上传仍使用 fetch。100% 仅表示请求体传输完成，此时显示“上传完成，处理中”；视频 ready 仍以后端响应为准，请求结束后隐藏进度条。
+- 视频和音频 multipart 上传均使用原生 XMLHttpRequest 的 `upload.onprogress` 展示真实字节进度；视频展示批次进度，不为单文件伪造进度。100% 仅表示请求体传输完成，此时显示“上传完成，处理中”；ready 仍以后端响应为准，请求结束后隐藏进度条。
 - ready 视频行可删除服务端素材，failed 行“移除”只清理前端本地项；删除失败保留该行并显示错误。混剪期间禁用删除。
 - “重置选择”只清空当前视频勾选及页面中的 mixResult/mixError，不删除已上传素材，不改变口播选择或 seed；混剪期间禁用。
 - “清空视频”按当前页面 ready 行的唯一 asset ID 顺序调用现有 `DELETE /api/assets/:id`，成功删除的行立即从页面移除；全部成功后清理 failed 本地行、视频选择与当前 mixResult/mixError。若某次删除失败，停止后续请求，保留失败和未处理的 ready 行及 failed 行，并显示错误。口播、selectedAudioId、seed 和服务端已完成的 mix 输出均保留。上传、单条删除、混剪或清空进行中禁用清空；清空期间禁用视频上传、单条删除与开始混剪，视频上传期间也禁用单条删除。
+- ready 口播行可单条删除；成功后移除该行，若它是当前选择则清空选择，并清理当前 mixResult/mixError。失败时保留该行并在口播卡片显示错误。
+- “清空口播”按当前页面音频的唯一 asset ID 顺序逐项调用 `DELETE /api/assets/:id`，其中 `404 ASSET_NOT_FOUND` 视为已删除并继续。全部成功后清空音频列表、当前口播选择、本地失败上传提示和 mixResult/mixError；其他错误则停止，保留失败和后续音频并展示错误。视频、seed 和服务端已完成的 mix 输出保留。音频上传、单条删除、混剪或清空进行中禁用清空；清空期间禁用音频上传、单条删除和开始混剪。
 
 ## 15. 自动化测试
 

@@ -98,7 +98,7 @@ export async function getAssets(signal?: AbortSignal): Promise<Asset[]> {
   return body.items;
 }
 
-export async function deleteVideoAsset(id: string, signal?: AbortSignal): Promise<void> {
+export async function deleteAsset(id: string, signal?: AbortSignal): Promise<void> {
   const body = await request(`/api/assets/${encodeURIComponent(id)}`, { method: "DELETE", signal });
   if (!record(body) || body.id !== id || body.deleted !== true) {
     throw new Error(genericError);
@@ -107,12 +107,10 @@ export async function deleteVideoAsset(id: string, signal?: AbortSignal): Promis
 
 export type UploadProgress = { loaded: number; total: number; percent: number };
 
-export async function uploadVideos(files: File[], signal?: AbortSignal,
-  onProgress?: (progress: UploadProgress) => void): Promise<VideoUploadItem[]> {
+function uploadForm(url: string, form: FormData, signal?: AbortSignal,
+  onProgress?: (progress: UploadProgress) => void): Promise<unknown> {
   if (signal?.aborted) throw new DOMException("The operation was aborted", "AbortError");
-  const form = new FormData();
-  files.forEach((file) => form.append("files", file));
-  const body = await new Promise<unknown>((resolve, reject) => {
+  return new Promise<unknown>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     let lastPercent = 0;
     const abort = () => xhr.abort();
@@ -131,10 +129,17 @@ export async function uploadVideos(files: File[], signal?: AbortSignal,
     xhr.onerror = () => { cleanup(); reject(new Error("网络连接失败，请稍后重试")); };
     xhr.onabort = () => { cleanup(); reject(new DOMException("The operation was aborted", "AbortError")); };
     signal?.addEventListener("abort", abort, { once: true });
-    xhr.open("POST", "/api/assets/videos");
+    xhr.open("POST", url);
     xhr.send(form);
     if (signal?.aborted) abort();
   });
+}
+
+export async function uploadVideos(files: File[], signal?: AbortSignal,
+  onProgress?: (progress: UploadProgress) => void): Promise<VideoUploadItem[]> {
+  const form = new FormData();
+  files.forEach((file) => form.append("files", file));
+  const body = await uploadForm("/api/assets/videos", form, signal, onProgress);
   if (!record(body) || !Array.isArray(body.items) || body.items.length !== files.length) {
     throw new Error(genericError);
   }
@@ -150,10 +155,11 @@ export async function uploadVideos(files: File[], signal?: AbortSignal,
   });
 }
 
-export async function uploadAudio(file: File, signal?: AbortSignal): Promise<AudioUploadItem> {
+export async function uploadAudio(file: File, signal?: AbortSignal,
+  onProgress?: (progress: UploadProgress) => void): Promise<AudioUploadItem> {
   const form = new FormData();
   form.append("file", file);
-  const body = await request("/api/assets/audio", { method: "POST", body: form, signal });
+  const body = await uploadForm("/api/assets/audio", form, signal, onProgress);
   if (!record(body) || body.status !== "ready" || typeof body.filename !== "string" ||
       !asset(body.asset) || body.asset.kind !== "audio") {
     throw new Error(genericError);

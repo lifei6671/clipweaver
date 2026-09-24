@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { Alert, Button, Card, Checkbox, ConfigProvider, Input, Progress, Radio, Space, Typography, Upload } from "antd";
-import { ApiError, deleteVideoAsset, errorMessage, getAssets, mixAssets, uploadAudio, uploadVideos } from "./api";
+import { Alert, Button, Card, Checkbox, ConfigProvider, Input, Progress, Radio, Space, Tag, Typography, Upload } from "antd";
+import { ApiError, deleteAsset, errorMessage, getAssets, mixAssets, uploadAudio, uploadVideos } from "./api";
 import type { Asset, MixResult } from "./types";
 import { formatDuration } from "./utils/formatDuration";
+import "./App.css";
 
 type VideoRow = {
   localKey: number;
@@ -20,12 +21,11 @@ function failure(error: unknown): string {
 
 function VideoPoster({ name, url }: { name: string; url?: string }) {
   const [failed, setFailed] = useState(false);
-  return <span style={{ width: 96, height: 72, flex: "0 0 96px", display: "flex", alignItems: "center",
-    justifyContent: "center", background: "#252b34", borderRadius: 4, overflow: "hidden" }}>
+  return <span className="media-poster">
     {url && !failed
       ? <img alt={`视频封面 ${name}`} src={url} onError={() => setFailed(true)}
           style={{ width: "100%", height: "100%", objectFit: "contain" }} />
-      : <span role="img" aria-label={`视频封面占位 ${name}`} style={{ color: "#c5cad2", fontSize: 12 }}>视频</span>}
+      : <span role="img" aria-label={`视频封面占位 ${name}`} className="media-poster-placeholder">视频</span>}
   </span>;
 }
 
@@ -41,6 +41,10 @@ export function App() {
   const [clearingVideos, setClearingVideos] = useState(false);
   const [videoUploadProgress, setVideoUploadProgress] = useState<{ key: number; percent: number }[]>([]);
   const [audioUpload, setAudioUpload] = useState<AudioUpload | null>(null);
+  const [audioUploadProgress, setAudioUploadProgress] = useState<number | null>(null);
+  const [audioDeleteError, setAudioDeleteError] = useState<string | null>(null);
+  const [deletingAudioIds, setDeletingAudioIds] = useState<string[]>([]);
+  const [clearingAudios, setClearingAudios] = useState(false);
   const [seed, setSeed] = useState("");
   const [mixing, setMixing] = useState(false);
   const [mixError, setMixError] = useState<string | null>(null);
@@ -49,6 +53,8 @@ export function App() {
   const audioPending = useRef(false);
   const mixPending = useRef(false);
   const clearPending = useRef(false);
+  const clearAudioPending = useRef(false);
+  const deletingAudioPending = useRef(new Set<string>());
   const controllers = useRef(new Set<AbortController>());
 
   useEffect(() => {
@@ -123,9 +129,12 @@ export function App() {
 
   function beginAudioUpload(file: File) {
     setAudioUpload({ name: file.name, status: "uploading" });
+    setAudioUploadProgress(0);
     const controller = new AbortController();
     controllers.current.add(controller);
-    uploadAudio(file, controller.signal).then(({ asset }) => {
+    uploadAudio(file, controller.signal, ({ percent }) => {
+      if (!controller.signal.aborted) setAudioUploadProgress(percent);
+    }).then(({ asset }) => {
       if (controller.signal.aborted) return;
       setAudios((current) => [...current.filter((item) => item.id !== asset.id), asset]);
       setSelectedAudioId(asset.id);
@@ -134,6 +143,7 @@ export function App() {
       if (!controller.signal.aborted) setAudioUpload({ name: file.name, status: "failed", error: failure(error) });
     }).finally(() => {
       controllers.current.delete(controller);
+      if (!controller.signal.aborted) setAudioUploadProgress(null);
       audioPending.current = false;
     });
   }
@@ -145,7 +155,7 @@ export function App() {
     const controller = new AbortController();
     controllers.current.add(controller);
     try {
-      await deleteVideoAsset(id, controller.signal);
+      await deleteAsset(id, controller.signal);
       if (controller.signal.aborted) return;
       setVideos((current) => current.filter((row) => row.asset?.id !== id));
       setSelectedVideoIds((current) => current.filter((selected) => selected !== id));
@@ -171,7 +181,7 @@ export function App() {
     try {
       for (const id of ids) {
         try {
-          await deleteVideoAsset(id, controller.signal);
+          await deleteAsset(id, controller.signal);
         } catch (error) {
           if (!(error instanceof ApiError && error.code === "ASSET_NOT_FOUND")) throw error;
         }
@@ -195,8 +205,69 @@ export function App() {
     }
   }
 
+  async function deleteAudio(id: string) {
+    if (mixing || audioPending.current || clearAudioPending.current || deletingAudioPending.current.has(id)) return;
+    deletingAudioPending.current.add(id);
+    setDeletingAudioIds((current) => [...current, id]);
+    setAudioDeleteError(null);
+    const controller = new AbortController();
+    controllers.current.add(controller);
+    try {
+      await deleteAsset(id, controller.signal);
+      if (controller.signal.aborted) return;
+      setAudios((current) => current.filter((item) => item.id !== id));
+      setSelectedAudioId((current) => current === id ? null : current);
+      setMixResult(null);
+      setMixError(null);
+    } catch (error) {
+      if (!controller.signal.aborted) setAudioDeleteError(failure(error));
+    } finally {
+      controllers.current.delete(controller);
+      deletingAudioPending.current.delete(id);
+      if (!controller.signal.aborted) setDeletingAudioIds((current) => current.filter((pending) => pending !== id));
+    }
+  }
+
+  async function clearAudios() {
+    if (clearAudioPending.current || mixing || audioPending.current || deletingAudioPending.current.size > 0 ||
+      (audios.length === 0 && audioUpload?.status !== "failed")) return;
+    clearAudioPending.current = true;
+    setClearingAudios(true);
+    setAudioDeleteError(null);
+    const ids = [...new Set(audios.map((item) => item.id))];
+    const controller = new AbortController();
+    controllers.current.add(controller);
+    try {
+      for (const id of ids) {
+        try {
+          await deleteAsset(id, controller.signal);
+        } catch (error) {
+          if (!(error instanceof ApiError && error.code === "ASSET_NOT_FOUND")) throw error;
+        }
+        if (controller.signal.aborted) return;
+        setAudios((current) => current.filter((item) => item.id !== id));
+        setSelectedAudioId((current) => current === id ? null : current);
+        setMixResult(null);
+        setMixError(null);
+      }
+      setAudios([]);
+      setSelectedAudioId(null);
+      setAudioUpload(null);
+      setMixResult(null);
+      setMixError(null);
+      setAudioDeleteError(null);
+    } catch (error) {
+      if (!controller.signal.aborted) setAudioDeleteError(failure(error));
+    } finally {
+      controllers.current.delete(controller);
+      clearAudioPending.current = false;
+      if (!controller.signal.aborted) setClearingAudios(false);
+    }
+  }
+
   async function submitMix() {
-    if (mixPending.current || clearPending.current) return;
+    if (mixPending.current || clearPending.current || clearAudioPending.current ||
+      deletingAudioPending.current.size > 0 || audioPending.current) return;
     const readyIds = new Set(videos.flatMap((row) => row.status === "ready" && row.asset ? [row.asset.id] : []));
     const videoIds = selectedVideoIds.filter((id) => readyIds.has(id));
     if (videoIds.length === 0 || !selectedAudioId || !audios.some((item) => item.id === selectedAudioId)) return;
@@ -220,16 +291,22 @@ export function App() {
   const canMix = selectedVideoIds.some((id) => videos.some((row) => row.status === "ready" && row.asset?.id === id)) &&
     selectedAudioId !== null && audios.some((item) => item.id === selectedAudioId);
   const uploadingVideo = videos.some((row) => row.status === "uploading");
+  const uploadingAudio = audioUpload?.status === "uploading";
+  const mixDisabled = !canMix || mixing || clearingVideos || deletingVideoIds.length > 0 ||
+    clearingAudios || deletingAudioIds.length > 0 || uploadingAudio;
   const visibleProgress = videoUploadProgress.at(-1);
 
   return (
-    <ConfigProvider>
-      <main style={{ maxWidth: 760, margin: "40px auto", padding: "0 24px" }}>
-        <Typography.Title>ClipWeaver</Typography.Title>
-        {loadError && <Alert type="error" showIcon message={`素材加载失败：${loadError}`} style={{ marginBottom: 16 }} />}
-        <Space direction="vertical" size="large" style={{ width: "100%" }}>
-          <Card title="视频素材">
-            <Upload.Dragger aria-label="上传视频素材" multiple accept="video/*" showUploadList={false}
+    <ConfigProvider theme={{ token: { borderRadius: 10, colorPrimary: "#315f9c" } }}>
+      <main className="app-shell">
+        <header className="app-header">
+          <Typography.Title level={1}>ClipWeaver</Typography.Title>
+          <Typography.Text type="secondary">本地视频混剪工具</Typography.Text>
+        </header>
+        {loadError && <Alert type="error" showIcon message={`素材加载失败：${loadError}`} className="section-alert" />}
+        <div className="app-sections">
+          <Card title="视频素材" className="section-card">
+            <Upload.Dragger aria-label="上传视频素材" className="video-dropzone" multiple accept="video/*" showUploadList={false}
               disabled={clearingVideos} beforeUpload={(file, fileList) => {
               if (file === fileList[0]) {
                 const accepted = fileList.filter((item) => !item.type || item.type.startsWith("video/"));
@@ -241,94 +318,123 @@ export function App() {
               }
               return false;
             }}>
-              <p>点击或拖入多个视频文件</p>
+              <Typography.Text strong>点击或拖入多个视频文件</Typography.Text>
+              <Typography.Text type="secondary" className="upload-hint">支持批量上传，服务端会校验媒体并生成封面</Typography.Text>
             </Upload.Dragger>
-            {visibleProgress && <div role="status" style={{ marginTop: 16 }}>
+            {visibleProgress && <div role="status" className="upload-progress">
               <Typography.Text>{visibleProgress.percent === 100 ? "上传完成，处理中" : `上传中 ${visibleProgress.percent}%`}</Typography.Text>
-              <Progress percent={visibleProgress.percent} />
+              <Progress percent={visibleProgress.percent} size="small" />
             </div>}
-            {videoUploadError && <Alert type="error" showIcon message={videoUploadError} style={{ marginTop: 16 }} />}
-            {videoDeleteError && <Alert type="error" showIcon message={videoDeleteError} style={{ marginTop: 16 }} />}
-            <Space style={{ marginTop: 16, marginBottom: 16 }}>
-              <Typography.Text>已选 {selectedVideoIds.length} 个视频</Typography.Text>
-              <Button size="small" disabled={selectedVideoIds.length === 0 || mixing} onClick={() => {
-                setSelectedVideoIds([]);
-                setMixResult(null);
-                setMixError(null);
-              }}>重置选择</Button>
-              <Button size="small" danger loading={clearingVideos}
-                disabled={videos.length === 0 || mixing || uploadingVideo || deletingVideoIds.length > 0 || clearingVideos}
-                onClick={() => void clearVideos()}>清空视频</Button>
-            </Space>
-            <ul aria-label="视频素材列表" style={{ listStyle: "none", padding: 0, margin: 0 }}>
-              {videos.map((row) => <li key={row.localKey} style={{ display: "flex", alignItems: "center", gap: 12,
-                padding: "8px 0", borderBottom: "1px solid #f0f0f0" }}>
+            {videoUploadError && <Alert type="error" showIcon message={videoUploadError} className="section-alert" />}
+            {videoDeleteError && <Alert type="error" showIcon message={videoDeleteError} className="section-alert" />}
+            <div className="section-toolbar video-toolbar">
+              <Typography.Text className="selection-count">已选 {selectedVideoIds.length} 个视频</Typography.Text>
+              <div className="toolbar-actions">
+                <Button size="small" disabled={selectedVideoIds.length === 0 || mixing} onClick={() => {
+                  setSelectedVideoIds([]);
+                  setMixResult(null);
+                  setMixError(null);
+                }}>重置选择</Button>
+                <Button size="small" danger loading={clearingVideos}
+                  disabled={videos.length === 0 || mixing || uploadingVideo || deletingVideoIds.length > 0 || clearingVideos}
+                  onClick={() => void clearVideos()}>清空视频</Button>
+              </div>
+            </div>
+            <ul aria-label="视频素材列表" className="media-list">
+              {videos.map((row) => <li key={row.localKey} className="media-row">
                 <VideoPoster name={row.name} url={row.asset?.posterUrl} />
-                  {row.status === "ready" && row.asset
-                    ? <Checkbox aria-label={`选择视频 ${row.name}`} checked={selectedVideoIds.includes(row.asset.id)}
+                <div className="media-content">
+                  <div className="media-primary">
+                    {row.status === "ready" && row.asset
+                      ? <Checkbox aria-label={`选择视频 ${row.name}`} checked={selectedVideoIds.includes(row.asset.id)}
                         onChange={(event) => setSelectedVideoIds((current) => event.target.checked
                           ? [...new Set([...current, row.asset!.id])]
                           : current.filter((id) => id !== row.asset!.id))} />
-                    : null}
-                  <span style={{ minWidth: 0, overflowWrap: "anywhere", flex: 1 }}>
-                    <span>{row.name}</span> · {row.status === "failed"
-                      ? <Typography.Text type="danger">{row.status}</Typography.Text>
-                      : <span>{row.status}</span>}
-                    {row.asset && <> · <span>{formatDuration(row.asset.durationUs)}</span></>}
-                    {row.error && <><br /><Typography.Text type="danger" role="alert">{row.error}</Typography.Text></>}
-                  </span>
-                  {row.status === "ready" && row.asset && <Button size="small" danger
-                    aria-label={`删除视频 ${row.name}`} disabled={mixing || clearingVideos || uploadingVideo || deletingVideoIds.includes(row.asset.id)}
-                    onClick={() => void deleteVideo(row.asset!.id)}>删除</Button>}
-                  {row.status === "failed" && <Button size="small" aria-label={`移除视频 ${row.name}`}
-                    disabled={mixing || clearingVideos} onClick={() => setVideos((current) => current.filter((item) => item.localKey !== row.localKey))}>移除</Button>}
+                      : null}
+                    <Typography.Text strong className="media-name">{row.name}</Typography.Text>
+                  </div>
+                  <div className="media-meta">
+                    <Tag className="status-tag" color={row.status === "ready" ? "success" : row.status === "failed" ? "error" : "processing"}>{row.status}</Tag>
+                    {row.asset && <Typography.Text type="secondary">{formatDuration(row.asset.durationUs)}</Typography.Text>}
+                  </div>
+                  {row.error && <Typography.Text type="danger" role="alert" className="media-error">{row.error}</Typography.Text>}
+                </div>
+                {row.status === "ready" && row.asset && <Button type="text" size="small" danger className="media-action"
+                  aria-label={`删除视频 ${row.name}`} disabled={mixing || clearingVideos || uploadingVideo || deletingVideoIds.includes(row.asset.id)}
+                  onClick={() => void deleteVideo(row.asset!.id)}>删除</Button>}
+                {row.status === "failed" && <Button type="text" size="small" danger className="media-action" aria-label={`移除视频 ${row.name}`}
+                  disabled={mixing || clearingVideos} onClick={() => setVideos((current) => current.filter((item) => item.localKey !== row.localKey))}>移除</Button>}
               </li>)}
             </ul>
           </Card>
-          <Card title="口播音频">
-            <Upload accept="audio/*" showUploadList={false} disabled={audioUpload?.status === "uploading"}
-              beforeUpload={(file, fileList) => {
-                if (file === fileList[0] && !audioPending.current) {
-                  audioPending.current = true;
-                  beginAudioUpload(file);
-                }
-                return false;
-              }}>
-              <Button disabled={audioUpload?.status === "uploading"}>选择口播音频文件</Button>
-            </Upload>
-            {audioUpload && <p>{audioUpload.name} · {audioUpload.status}
-              {audioUpload.error && <span role="alert">：{audioUpload.error}</span>}</p>}
-            <ul aria-label="口播音频列表">
-              {audios.map((item) => <li key={item.id}>
+          <Card title="口播音频" className="section-card">
+            <div className="section-toolbar audio-toolbar">
+              <Upload accept="audio/*" showUploadList={false} disabled={uploadingAudio || clearingAudios}
+                beforeUpload={(file, fileList) => {
+                  if (file === fileList[0] && !audioPending.current) {
+                    audioPending.current = true;
+                    beginAudioUpload(file);
+                  }
+                  return false;
+                }}>
+                <Button disabled={uploadingAudio || clearingAudios}>选择口播音频文件</Button>
+              </Upload>
+              <Button size="small" danger loading={clearingAudios}
+                disabled={(audios.length === 0 && audioUpload?.status !== "failed") || mixing || uploadingAudio ||
+                  deletingAudioIds.length > 0 || clearingAudios}
+                onClick={() => void clearAudios()}>清空口播</Button>
+            </div>
+            {audioUploadProgress !== null && <div role="status" className="upload-progress">
+              <Typography.Text>{audioUploadProgress === 100 ? "上传完成，处理中" : `上传中 ${audioUploadProgress}%`}</Typography.Text>
+              <Progress percent={audioUploadProgress} size="small" />
+            </div>}
+            {audioUpload && <div className="upload-message">
+              <Typography.Text className="media-name">{audioUpload.name}</Typography.Text>
+              <Tag className="status-tag" color={audioUpload.status === "failed" ? "error" : "processing"}>{audioUpload.status}</Tag>
+              {audioUpload.error && <Typography.Text type="danger" role="alert">：{audioUpload.error}</Typography.Text>}
+            </div>}
+            {audioDeleteError && <Alert type="error" showIcon message={audioDeleteError} className="section-alert" />}
+            <ul aria-label="口播音频列表" className="media-list">
+              {audios.map((item) => <li key={item.id} className="media-row audio-row">
                 <Radio aria-label={`选择口播 ${item.name}`} checked={selectedAudioId === item.id}
-                  onChange={() => setSelectedAudioId(item.id)}>
-                  {item.name} · ready · {formatDuration(item.durationUs)}
-                </Radio>
+                  onChange={() => setSelectedAudioId(item.id)} />
+                <div className="media-content">
+                  <Typography.Text strong className="media-name">{item.name}</Typography.Text>
+                  <div className="media-meta">
+                    <Tag className="status-tag" color="success">ready</Tag>
+                    <Typography.Text type="secondary">{formatDuration(item.durationUs)}</Typography.Text>
+                  </div>
+                </div>
+                <Button type="text" size="small" danger className="media-action" aria-label={`删除口播 ${item.name}`}
+                  disabled={mixing || uploadingAudio || clearingAudios || deletingAudioIds.includes(item.id)}
+                  onClick={() => void deleteAudio(item.id)}>删除</Button>
               </li>)}
             </ul>
           </Card>
-          <Card title="混剪操作">
-            <Space direction="vertical" style={{ width: "100%" }}>
+          <Card title="混剪操作" className="section-card">
+            <div className="mix-controls">
               <label htmlFor="mix-seed">随机种子（可选）</label>
               <Input id="mix-seed" value={seed} onChange={(event) => setSeed(event.target.value)}
                 placeholder="留空由服务端生成" />
-              <Space>
-                <Button type="primary" disabled={!canMix || mixing || clearingVideos || deletingVideoIds.length > 0} onClick={submitMix}>开始混剪</Button>
-                {mixResult && <Button disabled={!canMix || mixing || clearingVideos || deletingVideoIds.length > 0} onClick={submitMix}>重新制作</Button>}
+              <Space wrap>
+                <Button type="primary" size="large" disabled={mixDisabled} onClick={submitMix}>开始混剪</Button>
+                {mixResult && <Button disabled={mixDisabled} onClick={submitMix}>重新制作</Button>}
               </Space>
               {mixing && <Typography.Text role="status">制作中</Typography.Text>}
               {mixError && <Alert type="error" showIcon message={mixError} />}
-            </Space>
+            </div>
           </Card>
-          {mixResult && <Card title="成片结果">
-            <Space direction="vertical" style={{ width: "100%" }}>
-              <video aria-label="成片预览" controls src={mixResult.previewUrl} style={{ maxWidth: "100%", maxHeight: 480 }} />
-              <Typography.Text>时长：{formatDuration(mixResult.durationUs)}</Typography.Text>
-              <Typography.Text>本次种子：{mixResult.seed}</Typography.Text>
-              <Button href={mixResult.downloadUrl} download>下载 MP4</Button>
-            </Space>
+          {mixResult && <Card title="成片结果" className="section-card">
+            <div className="result-content">
+              <video aria-label="成片预览" controls src={mixResult.previewUrl} className="result-preview" />
+              <div className="result-meta">
+                <Typography.Text type="secondary">时长：{formatDuration(mixResult.durationUs)}</Typography.Text>
+                <Typography.Text type="secondary">本次种子：{mixResult.seed}</Typography.Text>
+              </div>
+              <Button type="primary" href={mixResult.downloadUrl} download>下载 MP4</Button>
+            </div>
           </Card>}
-        </Space>
+        </div>
       </main>
     </ConfigProvider>
   );
