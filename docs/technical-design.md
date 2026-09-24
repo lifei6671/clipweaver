@@ -448,21 +448,19 @@ v0.1 优先可诊断性，不追求单条巨大 `filter_complex`。
 
 生成 concat 清单，按照 MixPlan 顺序拼接为 `silent.mp4`。
 
-所有临时片段先统一编码参数，再使用 concat demuxer。实现阶段必须通过集成测试验证时间戳和末片时长。
+所有临时片段先统一编码参数，再使用 concat demuxer；时间戳和末片时长由集成测试验证。
 
-### 9.3 阶段 C：替换口播
+### 9.3 阶段 C：口播时间轴标准化
 
-将 `silent.mp4` 与上传口播合并：
+从上传口播中仅映射选定的 audio stream，解码后用 `asetpts=N/SR/TB` 按采样数重建连续时间轴，编码为 `pcm_s16le` 的 `narration.wav`。此阶段不循环、不填充口播，也不放宽目标时长。
 
-- 仅映射 silent 视频的 video stream。
-- 仅映射口播选定的 audio stream。
-- 原素材音轨不进入最终输出。
-- 口播音频进入 mux 前执行 `asetpts=PTS-STARTPTS`。
-- 视频端允许使用 `tpad=stop=-1:stop_mode=clone` 让最后一帧继续覆盖尾部，避免视频先结束截断口播。
-- 最终输出使用显式 `-t <TargetDuration>` 作为硬时长上界；不把 `-shortest` 作为核心对齐机制。
-- 音频统一编码 AAC。
-- MP4 固定添加 `-movflags +faststart`，保证浏览器预览时 moov 索引前置。
-- 逻辑 MixPlan 始终保持精确 `TargetDurationUS`，tpad 仅用于渲染容错，不回写 Planner。
+### 9.4 阶段 D：视频定长
+
+以 `silent.mp4` 为输入，只映射 video stream；用 `tpad=stop=-1:stop_mode=clone` 延续末帧，并以显式 `-t <TargetDuration>` 及 30fps/H.264/yuv420p 输出 `final-video.mp4`。`tpad` 只修正渲染时间轴，不回写 MixPlan 的 `TargetDurationUS`。
+
+### 9.5 阶段 E：简单 mux
+
+仅映射 `final-video.mp4` 的 video stream 与 `narration.wav` 的 audio stream，使用显式 `-t <TargetDuration>`、`-c:v copy`、`-c:a aac` 和 `-movflags +faststart` 生成最终 MP4。素材原声不进入输出；不以 `-shortest` 截断口播。随后进入 §10 的 FFprobe Validator。
 
 ## 10. 输出验收
 
@@ -491,11 +489,11 @@ Validator 必须断言：
 10. `abs(Tformat - Ttarget) <= 100ms`。
 11. `abs(Tvideo - Taudio) <= 100ms`。
 
-FFmpeg 命令构建测试还必须证明 mux 阶段只映射 silent video 与 narration audio，不映射素材原声；集成测试使用带独立音轨的视频素材验证最终只存在一个 AAC 音轨。
+FFmpeg 命令构建测试还必须证明 mux 阶段只映射 `final-video.mp4` 的 video stream 与标准化 `narration.wav` 的 audio stream，不映射 `silent.mp4`、原始口播或素材原声；集成测试使用带独立音轨的视频素材验证最终只存在一个 AAC 音轨。
 
 任一断言不满足时返回 `RENDER_VALIDATION_FAILED`。
 
-最终交付前还需要人工抽样确认口播尾部无明显缺失，并在 README 记录实际验证结果。
+完整口播尾部已人工抽样试听确认无明显缺失；实际验证结果见 README 和 TASK-010。
 
 ## 11. HTTP API
 
@@ -660,7 +658,7 @@ FFmpeg 命令构建测试还必须证明 mux 阶段只映射 silent video 与 na
 - mixId
 - assetId（适用时）
 - seed（混剪时）
-- phase：probe / plan / normalize / concat / mux / validate
+- phase：probe / plan / normalize / concat / narration-normalize / video-finalize / mux / validate
 - elapsedMs
 - errorCode
 
