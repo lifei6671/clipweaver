@@ -2,11 +2,16 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/lifei6671/clipweaver/internal/domain"
@@ -26,8 +31,11 @@ type AssetStore interface {
 	RemoveUploadStaging(id string) error
 	RemoveAsset(id string) error
 	SaveAsset(asset domain.Asset) error
+	ReadAsset(id string) (domain.Asset, error)
 	ListAssets() ([]domain.Asset, error)
 	SourcePath(id string) (string, error)
+	PosterPath(id string) (string, error)
+	OpenPoster(id string) (*os.File, error)
 }
 
 type AssetProber interface {
@@ -35,13 +43,21 @@ type AssetProber interface {
 	ProbeAudio(context.Context, string) (media.Result, error)
 }
 
-type AssetService struct {
-	store  AssetStore
-	prober AssetProber
+type AssetPoster interface {
+	Generate(context.Context, string, string, domain.DurationUS) error
 }
 
-func NewAssetService(store AssetStore, prober AssetProber) *AssetService {
-	return &AssetService{store: store, prober: prober}
+type AssetService struct {
+	videoMu  sync.Mutex
+	posterMu sync.Mutex
+	store    AssetStore
+	prober   AssetProber
+	poster   AssetPoster
+	logger   *slog.Logger
+}
+
+func NewAssetService(store AssetStore, prober AssetProber, poster AssetPoster, logger *slog.Logger) *AssetService {
+	return &AssetService{store: store, prober: prober, poster: poster, logger: logger}
 }
 
 func (s *AssetService) UploadVideo(ctx context.Context, name string, source io.Reader) (domain.Asset, error) {
@@ -53,7 +69,94 @@ func (s *AssetService) UploadAudio(ctx context.Context, name string, source io.R
 }
 
 func (s *AssetService) ListAssets() ([]domain.Asset, error) {
-	return s.store.ListAssets()
+	s.videoMu.Lock()
+	defer s.videoMu.Unlock()
+	assets, err := s.store.ListAssets()
+	if err != nil {
+		return nil, err
+	}
+	canonical := make(map[string]domain.Asset)
+	for _, asset := range assets {
+		if asset.Kind == domain.AssetKindVideo {
+			if asset.ContentSHA256 == "" {
+				return nil, fmt.Errorf("video content digest missing for asset %s", asset.ID)
+			}
+			if prior, ok := canonical[asset.ContentSHA256]; !ok || earlierAsset(asset, prior) {
+				canonical[asset.ContentSHA256] = asset
+			}
+		}
+	}
+	visible := make([]domain.Asset, 0, len(assets))
+	for _, asset := range assets {
+		if asset.Kind == domain.AssetKindVideo && canonical[asset.ContentSHA256].ID != asset.ID {
+			s.logger.Info("hiding duplicate video asset", "assetId", asset.ID, "canonicalId", canonical[asset.ContentSHA256].ID)
+			continue
+		}
+		visible = append(visible, asset)
+	}
+	for i := range visible {
+		if visible[i].Kind == domain.AssetKindVideo && !visible[i].HasPoster {
+			s.backfillPoster(context.Background(), &visible[i])
+		}
+	}
+	return visible, nil
+}
+
+func (s *AssetService) DeleteVideo(id string) (string, error) {
+	s.videoMu.Lock()
+	defer s.videoMu.Unlock()
+	asset, err := s.store.ReadAsset(id)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", ErrAssetNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	if asset.Kind != domain.AssetKindVideo {
+		return "", ErrInvalidMixRequest
+	}
+	assets, err := s.store.ListAssets()
+	if err != nil {
+		return "", err
+	}
+	for _, candidate := range assets {
+		if candidate.Kind != domain.AssetKindVideo || candidate.ContentSHA256 != asset.ContentSHA256 {
+			continue
+		}
+		if err := s.store.RemoveAsset(candidate.ID); err != nil {
+			s.logger.Error("delete video asset group failed", "assetId", asset.ID, "failedId", candidate.ID, "error", err)
+			return "", fmt.Errorf("delete video asset %s: %w", candidate.ID, err)
+		}
+	}
+	return asset.ID, nil
+}
+
+func (s *AssetService) backfillPoster(ctx context.Context, asset *domain.Asset) {
+	s.posterMu.Lock()
+	defer s.posterMu.Unlock()
+	if file, err := s.store.OpenPoster(asset.ID); err == nil {
+		file.Close()
+		asset.HasPoster = true
+		return
+	}
+	path, err := s.store.PosterPath(asset.ID)
+	if err != nil {
+		s.logger.Warn("video poster path unavailable", "assetId", asset.ID, "error", err)
+		return
+	}
+	if err := s.poster.Generate(ctx, asset.StoredPath, path, asset.DurationUS); err != nil {
+		s.logger.Warn("video poster generation failed", "assetId", asset.ID, "error", err)
+		return
+	}
+	asset.HasPoster = true
+}
+
+func earlierAsset(a, b domain.Asset) bool {
+	return a.CreatedAt.Before(b.CreatedAt) || (a.CreatedAt.Equal(b.CreatedAt) && a.ID < b.ID)
+}
+
+func (s *AssetService) OpenPoster(id string) (*os.File, error) {
+	return s.store.OpenPoster(id)
 }
 
 func (s *AssetService) upload(ctx context.Context, kind domain.AssetKind, name string, source io.Reader) (asset domain.Asset, err error) {
@@ -75,7 +178,13 @@ func (s *AssetService) upload(ctx context.Context, kind domain.AssetKind, name s
 	if err != nil {
 		return domain.Asset{}, err
 	}
-	_, copyErr := io.Copy(file, source)
+	var hash hash.Hash
+	var target io.Writer = file
+	if kind == domain.AssetKindVideo {
+		hash = sha256.New()
+		target = io.MultiWriter(file, hash)
+	}
+	_, copyErr := io.Copy(target, source)
 	closeErr := file.Close()
 	if copyErr != nil {
 		return domain.Asset{}, copyErr
@@ -111,6 +220,29 @@ func (s *AssetService) upload(ctx context.Context, kind domain.AssetKind, name s
 	}
 	if kind == domain.AssetKindVideo {
 		asset.Width, asset.Height = result.Width, result.Height
+		asset.ContentSHA256 = hex.EncodeToString(hash.Sum(nil))
+		s.videoMu.Lock()
+		defer s.videoMu.Unlock()
+		existing, listErr := s.store.ListAssets()
+		if listErr != nil {
+			return domain.Asset{}, fmt.Errorf("compare video content: %w", listErr)
+		}
+		var canonical domain.Asset
+		for _, candidate := range existing {
+			if candidate.Kind == domain.AssetKindVideo && candidate.ContentSHA256 == "" {
+				return domain.Asset{}, fmt.Errorf("video content digest missing for asset %s", candidate.ID)
+			}
+			if candidate.Kind == domain.AssetKindVideo && candidate.ContentSHA256 == asset.ContentSHA256 &&
+				(canonical.ID == "" || earlierAsset(candidate, canonical)) {
+				canonical = candidate
+			}
+		}
+		if canonical.ID != "" {
+			if !canonical.HasPoster {
+				s.backfillPoster(ctx, &canonical)
+			}
+			return canonical, nil
+		}
 	}
 	if err = s.store.PromoteUpload(uploadID, asset.ID); err != nil {
 		return domain.Asset{}, err
@@ -127,6 +259,22 @@ func (s *AssetService) upload(ctx context.Context, kind domain.AssetKind, name s
 	asset.StoredPath, err = s.store.SourcePath(asset.ID)
 	if err != nil {
 		return domain.Asset{}, err
+	}
+	if kind == domain.AssetKindVideo {
+		posterPath, pathErr := s.store.PosterPath(asset.ID)
+		if pathErr != nil {
+			s.logger.Warn("video poster path unavailable", "assetId", asset.ID, "error", pathErr)
+		} else if posterErr := s.poster.Generate(ctx, asset.StoredPath, posterPath, asset.DurationUS); posterErr != nil {
+			var ffmpegErr *media.FFmpegError
+			if errors.As(posterErr, &ffmpegErr) {
+				s.logger.Warn("video poster generation failed", "assetId", asset.ID,
+					"cause", ffmpegErr.Cause, "stderr", ffmpegErr.Stderr)
+			} else {
+				s.logger.Warn("video poster generation failed", "assetId", asset.ID, "error", posterErr)
+			}
+		} else {
+			asset.HasPoster = true
+		}
 	}
 	if err = s.store.SaveAsset(asset); err != nil {
 		return domain.Asset{}, err

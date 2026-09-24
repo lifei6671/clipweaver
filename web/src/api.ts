@@ -46,25 +46,20 @@ function asset(value: unknown): value is Asset {
     (value.kind === "video" || value.kind === "audio") &&
     typeof value.name === "string" && typeof value.durationUs === "number" &&
     Number.isFinite(value.durationUs) && value.durationUs > 0 &&
-    typeof value.width === "number" && typeof value.height === "number";
+    typeof value.width === "number" && typeof value.height === "number" &&
+    (value.posterUrl === undefined || (value.kind === "video" &&
+      value.posterUrl === `/api/assets/${value.id}/poster`));
 }
 
-async function request(url: string, init?: RequestInit): Promise<unknown> {
-  let response: Response;
-  try {
-    response = await fetch(url, init);
-  } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") throw error;
-    throw new Error("网络连接失败，请稍后重试");
-  }
-  if (response.status === 413) throw new Error(errorMessage("UPLOAD_TOO_LARGE"));
+function parseResponse(status: number, text: string): unknown {
+  if (status === 413) throw new Error(errorMessage("UPLOAD_TOO_LARGE"));
   let body: unknown;
   try {
-    body = await response.json();
+    body = JSON.parse(text);
   } catch {
     throw new Error(genericError);
   }
-  if (!response.ok) {
+  if (status < 200 || status >= 300) {
     const error = record(body) && record(body.error) ? body.error : null;
     const rawCode = error && typeof error.code === "string" ? error.code : "";
     const code = knownErrorCodes.has(rawCode) ? rawCode : "UNKNOWN_ERROR";
@@ -77,6 +72,24 @@ async function request(url: string, init?: RequestInit): Promise<unknown> {
   return body;
 }
 
+async function request(url: string, init?: RequestInit): Promise<unknown> {
+  let response: Response;
+  try {
+    response = await fetch(url, init);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw error;
+    throw new Error("网络连接失败，请稍后重试");
+  }
+  if (response.status === 413) return parseResponse(413, "");
+  let body: string;
+  try {
+    body = await response.text();
+  } catch {
+    throw new Error(genericError);
+  }
+  return parseResponse(response.status, body);
+}
+
 export async function getAssets(signal?: AbortSignal): Promise<Asset[]> {
   const body = await request("/api/assets", { signal });
   if (!record(body) || !Array.isArray(body.items) || !body.items.every(asset)) {
@@ -85,10 +98,43 @@ export async function getAssets(signal?: AbortSignal): Promise<Asset[]> {
   return body.items;
 }
 
-export async function uploadVideos(files: File[], signal?: AbortSignal): Promise<VideoUploadItem[]> {
+export async function deleteVideoAsset(id: string, signal?: AbortSignal): Promise<void> {
+  const body = await request(`/api/assets/${encodeURIComponent(id)}`, { method: "DELETE", signal });
+  if (!record(body) || body.id !== id || body.deleted !== true) {
+    throw new Error(genericError);
+  }
+}
+
+export type UploadProgress = { loaded: number; total: number; percent: number };
+
+export async function uploadVideos(files: File[], signal?: AbortSignal,
+  onProgress?: (progress: UploadProgress) => void): Promise<VideoUploadItem[]> {
+  if (signal?.aborted) throw new DOMException("The operation was aborted", "AbortError");
   const form = new FormData();
   files.forEach((file) => form.append("files", file));
-  const body = await request("/api/assets/videos", { method: "POST", body: form, signal });
+  const body = await new Promise<unknown>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    let lastPercent = 0;
+    const abort = () => xhr.abort();
+    const cleanup = () => signal?.removeEventListener("abort", abort);
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable || event.total <= 0) return;
+      const percent = Math.max(lastPercent, Math.min(100, Math.round(event.loaded / event.total * 100)));
+      lastPercent = percent;
+      onProgress?.({ loaded: event.loaded, total: event.total, percent });
+    };
+    xhr.onload = () => {
+      cleanup();
+      try { resolve(parseResponse(xhr.status, xhr.responseText)); }
+      catch (error) { reject(error); }
+    };
+    xhr.onerror = () => { cleanup(); reject(new Error("网络连接失败，请稍后重试")); };
+    xhr.onabort = () => { cleanup(); reject(new DOMException("The operation was aborted", "AbortError")); };
+    signal?.addEventListener("abort", abort, { once: true });
+    xhr.open("POST", "/api/assets/videos");
+    xhr.send(form);
+    if (signal?.aborted) abort();
+  });
   if (!record(body) || !Array.isArray(body.items) || body.items.length !== files.length) {
     throw new Error(genericError);
   }

@@ -2,6 +2,7 @@ package media
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -50,4 +51,60 @@ func TestExecutorRealFFmpeg(t *testing.T) {
 		t.Fatalf("output stat %v, %v", info, err)
 	}
 	t.Logf("output=%s video_us=%d audio_us=%d format_us=%d; one AAC stream enforced by Validator", output, result.VideoDurationUS, result.AudioDurationUS, result.FormatDurationUS)
+}
+
+// TestPosterGeneratorRealFFmpeg uses a lavfi video and skips when media tools are absent.
+func TestPosterGeneratorRealFFmpeg(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg unavailable")
+	}
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		t.Skip("ffprobe unavailable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	stage := t.TempDir()
+	video := filepath.Join(stage, "source.mp4")
+	create := exec.CommandContext(ctx, "ffmpeg", "-hide_banner", "-nostdin", "-v", "error", "-y",
+		"-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-t", "2",
+		"-c:v", "libx264", "-pix_fmt", "yuv420p", video)
+	if output, err := create.CombinedOutput(); err != nil {
+		t.Fatalf("generate video: %v: %s", err, output)
+	}
+
+	poster := filepath.Join(stage, "poster.jpg")
+	if err := NewPosterGenerator("ffmpeg").Generate(ctx, video, poster, 2_000_000); err != nil {
+		t.Fatalf("generate poster: %v", err)
+	}
+	info, err := os.Stat(poster)
+	if err != nil {
+		t.Fatalf("poster stat: %v", err)
+	}
+	if !info.Mode().IsRegular() || info.Size() == 0 {
+		t.Fatalf("poster is not a nonempty regular file: mode=%v size=%d", info.Mode(), info.Size())
+	}
+
+	probe := exec.CommandContext(ctx, "ffprobe", "-v", "error", "-select_streams", "v:0",
+		"-show_entries", "stream=codec_name,width,height", "-of", "json", poster)
+	output, err := probe.CombinedOutput()
+	if err != nil {
+		t.Fatalf("probe poster: %v: %s", err, output)
+	}
+	var result struct {
+		Streams []struct {
+			CodecName string `json:"codec_name"`
+			Width     int    `json:"width"`
+			Height    int    `json:"height"`
+		} `json:"streams"`
+	}
+	if err := json.Unmarshal(output, &result); err != nil {
+		t.Fatalf("decode poster probe: %v: %s", err, output)
+	}
+	if len(result.Streams) != 1 {
+		t.Fatalf("poster video streams = %d, want 1", len(result.Streams))
+	}
+	stream := result.Streams[0]
+	if stream.CodecName != "mjpeg" || stream.Width != 320 || stream.Height != 180 {
+		t.Fatalf("poster codec and size = %s %dx%d, want mjpeg 320x180", stream.CodecName, stream.Width, stream.Height)
+	}
 }

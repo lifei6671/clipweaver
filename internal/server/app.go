@@ -29,7 +29,7 @@ func New(cfg Config, logger *slog.Logger, shutdownContext ...context.Context) (*
 	if err != nil {
 		return nil, err
 	}
-	assets := service.NewAssetService(store, media.NewProber("", 0))
+	assets := service.NewAssetService(store, media.NewProber("", 0), media.NewPosterGenerator(""), logger)
 	mixes := service.NewMixService(store, media.NewExecutor("", ""), cfg.MixTimeout, cfg.MaxConcurrentMixes, nil)
 	app := fiber.New(fiber.Config{
 		DisableStartupMessage: true,

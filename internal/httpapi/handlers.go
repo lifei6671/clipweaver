@@ -2,18 +2,23 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"mime/multipart"
+	"os"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/lifei6671/clipweaver/internal/domain"
+	"github.com/lifei6671/clipweaver/internal/service"
 )
 
 type assetService interface {
 	UploadVideo(context.Context, string, io.Reader) (domain.Asset, error)
 	UploadAudio(context.Context, string, io.Reader) (domain.Asset, error)
 	ListAssets() ([]domain.Asset, error)
+	DeleteVideo(string) (string, error)
+	OpenPoster(string) (*os.File, error)
 }
 
 type handlers struct {
@@ -28,13 +33,35 @@ type assetResponse struct {
 	DurationUS domain.DurationUS `json:"durationUs"`
 	Width      int               `json:"width"`
 	Height     int               `json:"height"`
+	PosterURL  string            `json:"posterUrl,omitempty"`
 }
 
 func publicAsset(asset domain.Asset) assetResponse {
-	return assetResponse{
+	response := assetResponse{
 		ID: asset.ID, Kind: asset.Kind, Name: asset.Name,
 		DurationUS: asset.DurationUS, Width: asset.Width, Height: asset.Height,
 	}
+	if asset.Kind == domain.AssetKindVideo && asset.HasPoster {
+		response.PosterURL = "/api/assets/" + asset.ID + "/poster"
+	}
+	return response
+}
+
+func (h handlers) poster(c *fiber.Ctx) error {
+	file, err := h.assets.OpenPoster(c.Params("id"))
+	if errors.Is(err, os.ErrNotExist) {
+		return writeError(c, service.ErrAssetNotFound, h.logger)
+	}
+	if err != nil {
+		return writeError(c, err, h.logger)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return writeError(c, err, h.logger)
+	}
+	c.Set(fiber.HeaderContentType, "image/jpeg")
+	return c.SendStream(file, int(info.Size()))
 }
 
 type uploadItem struct {
@@ -127,4 +154,12 @@ func (h handlers) list(c *fiber.Ctx) error {
 		items = append(items, publicAsset(asset))
 	}
 	return c.JSON(fiber.Map{"items": items})
+}
+
+func (h handlers) deleteVideo(c *fiber.Ctx) error {
+	id, err := h.assets.DeleteVideo(c.Params("id"))
+	if err != nil {
+		return writeError(c, err, h.logger)
+	}
+	return c.JSON(fiber.Map{"id": id, "deleted": true})
 }

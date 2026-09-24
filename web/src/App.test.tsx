@@ -1,12 +1,59 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { App } from "./App";
-import { ApiError, getAssets, mixAssets, uploadAudio, uploadVideos } from "./api";
+import { ApiError, deleteVideoAsset, getAssets, mixAssets, uploadAudio, uploadVideos } from "./api";
 import { formatDuration } from "./utils/formatDuration";
 
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+});
+
+class MockXHR {
+  static instances: MockXHR[] = [];
+  static autoRespond = true;
+  upload = { onprogress: null as ((event: ProgressEvent) => void) | null };
+  onload: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  onabort: (() => void) | null = null;
+  status = 0;
+  responseText = "";
+  method = "";
+  url = "";
+  body?: FormData;
+  aborted = false;
+  private controller = new AbortController();
+
+  constructor() { MockXHR.instances.push(this); }
+  open(method: string, url: string) { this.method = method; this.url = url; }
+  send(body: FormData) {
+    this.body = body;
+    if (!MockXHR.autoRespond) return;
+    Promise.resolve(fetch(this.url, { method: this.method, body, signal: this.controller.signal }))
+      .then(async (response) => {
+        const text = await response.text();
+        if (!this.aborted) this.respond(response.status, text);
+      }).catch(() => { if (!this.aborted) this.onerror?.(); });
+  }
+  abort() {
+    this.aborted = true;
+    this.controller.abort();
+    this.onabort?.();
+  }
+  respond(status: number, body: unknown) {
+    this.status = status;
+    this.responseText = typeof body === "string" ? body : JSON.stringify(body);
+    this.onload?.();
+  }
+  progress(loaded: number, total: number, lengthComputable = true) {
+    this.upload.onprogress?.({ loaded, total, lengthComputable } as ProgressEvent);
+  }
+}
+
+beforeEach(() => {
+  MockXHR.instances = [];
+  MockXHR.autoRespond = true;
+  vi.stubGlobal("XMLHttpRequest", MockXHR);
 });
 
 const video = (id: string, name = `${id}.mp4`, durationUs = 9_700_000) =>
@@ -35,6 +82,7 @@ test("restores assets and server durations without restoring selections", async 
   expect(screen.getByRole("heading", { name: "ClipWeaver" })).toBeTruthy();
   expect(await screen.findByText("v1.mp4")).toBeTruthy();
   expect(screen.getByText("9.7 秒")).toBeTruthy();
+  expect(screen.getByRole("img", { name: "视频封面占位 v1.mp4" })).toBeTruthy();
   expect(screen.getByText(/a1.m4a/)).toBeTruthy();
   expect(screen.getByText(/a2.m4a/)).toBeTruthy();
   expect(screen.getByText("已选 0 个视频")).toBeTruthy();
@@ -44,6 +92,235 @@ test("restores assets and server durations without restoring selections", async 
   expect(screen.getByRole<HTMLButtonElement>("button", { name: "开始混剪" }).disabled).toBe(true);
   expect(container.querySelector("video")).toBeNull();
   expect(screen.queryByText("下载")).toBeNull();
+});
+
+test("restores duplicate video IDs only once", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({ items: [video("v1"), video("v1")] })));
+  render(<App />);
+  await screen.findByText("v1.mp4");
+  expect(within(screen.getByRole("list", { name: "视频素材列表" })).getAllByRole("listitem")).toHaveLength(1);
+});
+
+test("deleting a selected video clears stale mix result and error", async () => {
+  const fetchMock = vi.fn().mockResolvedValueOnce(json({ items: [video("v1"), audio("a1")] }))
+    .mockResolvedValueOnce(json(completed("first")))
+    .mockResolvedValueOnce(json({ error: { code: "MIX_TIMEOUT" } }, 504))
+    .mockResolvedValueOnce(json({ id: "v1", deleted: true }));
+  vi.stubGlobal("fetch", fetchMock);
+  render(<App />);
+  await selectMixAssets();
+  expect(screen.getByRole("button", { name: "删除视频 v1.mp4" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "开始混剪" }));
+  await screen.findByLabelText("成片预览");
+  fireEvent.click(screen.getByRole("button", { name: "重新制作" }));
+  await screen.findByText("混剪超时，请重试");
+  fireEvent.click(screen.getByRole("button", { name: "删除视频 v1.mp4" }));
+  await waitFor(() => expect(screen.queryByRole("checkbox", { name: "选择视频 v1.mp4" })).toBeNull());
+  expect(fetchMock.mock.calls[3][0]).toBe("/api/assets/v1");
+  expect(fetchMock.mock.calls[3][1].method).toBe("DELETE");
+  expect(screen.getByText("已选 0 个视频")).toBeTruthy();
+  expect(screen.queryByLabelText("成片预览")).toBeNull();
+  expect(screen.queryByText("混剪超时，请重试")).toBeNull();
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "开始混剪" }).disabled).toBe(true);
+});
+
+test("failed video rows remove locally without DELETE", async () => {
+  const fetchMock = vi.fn().mockResolvedValueOnce(json({ items: [] })).mockResolvedValueOnce(json({ items: [
+    { filename: "bad.mp4", status: "failed", error: { code: "INVALID_VIDEO" } },
+  ] }));
+  vi.stubGlobal("fetch", fetchMock);
+  const { container } = render(<App />);
+  fireEvent.change(fileInput(container, 0), { target: { files: [new File(["bad"], "bad.mp4")] } });
+  fireEvent.click(await screen.findByRole("button", { name: "移除视频 bad.mp4" }));
+  expect(screen.queryByText("bad.mp4")).toBeNull();
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+});
+
+test("failed DELETE retains video and shows a card error", async () => {
+  const fetchMock = vi.fn().mockResolvedValueOnce(json({ items: [video("v1")] }))
+    .mockResolvedValueOnce(json({ error: { code: "INTERNAL_ERROR", message: "raw /path" } }, 500));
+  vi.stubGlobal("fetch", fetchMock);
+  render(<App />);
+  await screen.findByRole("button", { name: "删除视频 v1.mp4" });
+  fireEvent.click(screen.getByRole("checkbox", { name: "选择视频 v1.mp4" }));
+  fireEvent.click(screen.getByRole("button", { name: "删除视频 v1.mp4" }));
+  const alert = await screen.findByRole("alert");
+  expect(alert.classList.contains("ant-alert-error")).toBe(true);
+  expect(alert.textContent).toContain("请求失败，请稍后重试");
+  expect(alert.textContent).not.toContain("raw /path");
+  expect(screen.getByRole("checkbox", { name: "选择视频 v1.mp4" })).toBeTruthy();
+  expect(screen.getByText("已选 1 个视频")).toBeTruthy();
+});
+
+test("reset selection clears mix state while preserving videos, audio and seed", async () => {
+  const fetchMock = vi.fn().mockResolvedValueOnce(json({ items: [video("v1"), video("v2"), audio("a1")] }))
+    .mockResolvedValueOnce(json(completed("first")))
+    .mockResolvedValueOnce(json({ error: { code: "MIX_TIMEOUT" } }, 504));
+  vi.stubGlobal("fetch", fetchMock);
+  render(<App />);
+  await screen.findByRole("button", { name: "删除视频 v1.mp4" });
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "重置选择" }).disabled).toBe(true);
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "清空视频" }).disabled).toBe(false);
+  fireEvent.click(screen.getByRole("checkbox", { name: "选择视频 v1.mp4" }));
+  fireEvent.click(screen.getByRole("radio", { name: "选择口播 a1.m4a" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "随机种子（可选）" }), { target: { value: "42" } });
+  fireEvent.click(screen.getByRole("button", { name: "开始混剪" }));
+  await screen.findByLabelText("成片预览");
+  fireEvent.click(screen.getByRole("button", { name: "重新制作" }));
+  await screen.findByText("混剪超时，请重试");
+  fireEvent.click(screen.getByRole("button", { name: "重置选择" }));
+  expect(screen.getByText("已选 0 个视频")).toBeTruthy();
+  expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "选择视频 v1.mp4" }).checked).toBe(false);
+  expect(screen.getByRole("checkbox", { name: "选择视频 v2.mp4" })).toBeTruthy();
+  expect(screen.getByRole<HTMLInputElement>("radio", { name: "选择口播 a1.m4a" }).checked).toBe(true);
+  expect(screen.getByRole<HTMLInputElement>("textbox", { name: "随机种子（可选）" }).value).toBe("42");
+  expect(screen.queryByLabelText("成片预览")).toBeNull();
+  expect(screen.queryByText("混剪超时，请重试")).toBeNull();
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "开始混剪" }).disabled).toBe(true);
+  expect(fetchMock).toHaveBeenCalledTimes(3);
+});
+
+test("clear video deletes every visible ready asset and local failed rows while preserving audio and seed", async () => {
+  const fetchMock = vi.fn().mockResolvedValueOnce(json({ items: [video("v1"), video("v2"), audio("a1")] }))
+    .mockResolvedValueOnce(json(completed("first")))
+    .mockResolvedValueOnce(json({ error: { code: "MIX_TIMEOUT" } }, 504))
+    .mockResolvedValueOnce(json({ items: [{ filename: "bad.mp4", status: "failed", error: { code: "INVALID_VIDEO" } }] }))
+    .mockResolvedValueOnce(json({ id: "v1", deleted: true }))
+    .mockResolvedValueOnce(json({ id: "v2", deleted: true }));
+  vi.stubGlobal("fetch", fetchMock);
+  const { container } = render(<App />);
+  await screen.findByRole("button", { name: "删除视频 v2.mp4" });
+  fireEvent.click(screen.getByRole("checkbox", { name: "选择视频 v1.mp4" }));
+  fireEvent.click(screen.getByRole("radio", { name: "选择口播 a1.m4a" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "随机种子（可选）" }), { target: { value: "42" } });
+  fireEvent.click(screen.getByRole("button", { name: "开始混剪" }));
+  await screen.findByLabelText("成片预览");
+  fireEvent.click(screen.getByRole("button", { name: "重新制作" }));
+  await screen.findByText("混剪超时，请重试");
+  fireEvent.change(fileInput(container, 0), { target: { files: [new File(["bad"], "bad.mp4")] } });
+  await screen.findByRole("button", { name: "移除视频 bad.mp4" });
+  fireEvent.click(screen.getByRole("button", { name: "清空视频" }));
+  await waitFor(() => expect(within(screen.getByRole("list", { name: "视频素材列表" })).queryAllByRole("listitem")).toHaveLength(0));
+  expect(fetchMock.mock.calls.slice(4).map(([url, init]) => [url, init.method])).toEqual([
+    ["/api/assets/v1", "DELETE"], ["/api/assets/v2", "DELETE"],
+  ]);
+  expect(screen.getByText("已选 0 个视频")).toBeTruthy();
+  expect(screen.queryByLabelText("成片预览")).toBeNull();
+  expect(screen.queryByText("混剪超时，请重试")).toBeNull();
+  expect(screen.getByRole<HTMLInputElement>("radio", { name: "选择口播 a1.m4a" }).checked).toBe(true);
+  expect(screen.getByRole<HTMLInputElement>("textbox", { name: "随机种子（可选）" }).value).toBe("42");
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "清空视频" }).disabled).toBe(true);
+});
+
+test("clear video treats a missing asset as deleted and continues with the next video", async () => {
+  const fetchMock = vi.fn().mockResolvedValueOnce(json({ items: [video("v1"), video("v2")] }))
+    .mockResolvedValueOnce(json({ error: { code: "ASSET_NOT_FOUND" } }, 404))
+    .mockResolvedValueOnce(json({ id: "v2", deleted: true }));
+  vi.stubGlobal("fetch", fetchMock);
+  render(<App />);
+  await screen.findByRole("button", { name: "删除视频 v2.mp4" });
+  fireEvent.click(screen.getByRole("checkbox", { name: "选择视频 v1.mp4" }));
+  fireEvent.click(screen.getByRole("button", { name: "清空视频" }));
+  await waitFor(() => expect(within(screen.getByRole("list", { name: "视频素材列表" })).queryAllByRole("listitem")).toHaveLength(0));
+  expect(fetchMock.mock.calls.slice(1).map(([url, init]) => [url, init.method])).toEqual([
+    ["/api/assets/v1", "DELETE"], ["/api/assets/v2", "DELETE"],
+  ]);
+  expect(screen.getByText("已选 0 个视频")).toBeTruthy();
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+test("clear video reports partial failure and retains failed and unprocessed rows", async () => {
+  const fetchMock = vi.fn().mockResolvedValueOnce(json({ items: [video("v1"), video("v2"), video("v3")] }))
+    .mockResolvedValueOnce(json({ items: [{ filename: "bad.mp4", status: "failed", error: { code: "INVALID_VIDEO" } }] }))
+    .mockResolvedValueOnce(json({ id: "v1", deleted: true }))
+    .mockResolvedValueOnce(json({ error: { code: "INTERNAL_ERROR" } }, 500));
+  vi.stubGlobal("fetch", fetchMock);
+  const { container } = render(<App />);
+  await screen.findByText("v3.mp4");
+  fireEvent.change(fileInput(container, 0), { target: { files: [new File(["bad"], "bad.mp4")] } });
+  await screen.findByRole("button", { name: "移除视频 bad.mp4" });
+  fireEvent.click(screen.getByRole("checkbox", { name: "选择视频 v1.mp4" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: "选择视频 v2.mp4" }));
+  fireEvent.click(screen.getByRole("button", { name: "清空视频" }));
+  await waitFor(() => expect(container.querySelector(".ant-alert-error")).not.toBeNull());
+  await waitFor(() => expect(screen.queryByText("v1.mp4")).toBeNull());
+  expect(screen.getByText("v2.mp4")).toBeTruthy();
+  expect(screen.getByText("v3.mp4")).toBeTruthy();
+  expect(screen.getByText("bad.mp4")).toBeTruthy();
+  expect(screen.getByText("已选 1 个视频")).toBeTruthy();
+  expect(fetchMock.mock.calls.slice(2).map(([url]) => url)).toEqual(["/api/assets/v1", "/api/assets/v2"]);
+});
+
+test("clear loading disables video upload, row deletion and mixing", async () => {
+  const pending = deferred<Response>();
+  const fetchMock = vi.fn().mockResolvedValueOnce(json({ items: [video("v1"), audio("a1")] }))
+    .mockImplementationOnce(() => pending.promise);
+  vi.stubGlobal("fetch", fetchMock);
+  const { container } = render(<App />);
+  await selectMixAssets();
+  fireEvent.click(screen.getByRole("button", { name: "清空视频" }));
+  const button = screen.getByRole<HTMLButtonElement>("button", { name: /清空视频/ });
+  expect(button.disabled).toBe(true);
+  expect(button.classList.contains("ant-btn-loading")).toBe(true);
+  expect(fileInput(container, 0).disabled).toBe(true);
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "删除视频 v1.mp4" }).disabled).toBe(true);
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "开始混剪" }).disabled).toBe(true);
+  pending.resolve(json({ id: "v1", deleted: true }));
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: /清空视频/ }).classList.contains("ant-btn-loading")).toBe(false));
+});
+
+test("single video deletion disables clear until its request completes", async () => {
+  const pending = deferred<Response>();
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(json({ items: [video("v1"), video("v2")] }))
+    .mockImplementationOnce(() => pending.promise));
+  render(<App />);
+  await screen.findByRole("button", { name: "删除视频 v2.mp4" });
+  fireEvent.click(screen.getByRole("button", { name: "删除视频 v1.mp4" }));
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "清空视频" }).disabled).toBe(true);
+  pending.resolve(json({ id: "v1", deleted: true }));
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "清空视频" }).disabled).toBe(false));
+});
+
+test("mixing disables video removal and reset", async () => {
+  const pending = deferred<Response>();
+  const fetchMock = vi.fn().mockResolvedValueOnce(json({ items: [video("v1"), audio("a1")] }))
+    .mockImplementationOnce(() => pending.promise);
+  vi.stubGlobal("fetch", fetchMock);
+  const { container } = render(<App />);
+  await selectMixAssets();
+  fireEvent.change(fileInput(container, 0), { target: { files: [new File(["bad"], "bad.mp4")] } });
+  // The in-flight upload produces a failed row before Mix starts.
+  pending.resolve(json({ items: [{ filename: "bad.mp4", status: "failed", error: { code: "INVALID_VIDEO" } }] }));
+  await screen.findByRole("button", { name: "移除视频 bad.mp4" });
+  const mixPending = deferred<Response>();
+  fetchMock.mockImplementationOnce(() => mixPending.promise);
+  fireEvent.click(screen.getByRole("button", { name: "开始混剪" }));
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "删除视频 v1.mp4" }).disabled).toBe(true);
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "移除视频 bad.mp4" }).disabled).toBe(true);
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "重置选择" }).disabled).toBe(true);
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "清空视频" }).disabled).toBe(true);
+  expect(fetchMock).toHaveBeenCalledTimes(3);
+  mixPending.resolve(json(completed()));
+  await screen.findByLabelText("成片预览");
+});
+
+test("delete API validates success payload", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(json({ id: "wrong", deleted: true })));
+  await expect(deleteVideoAsset("v1")).rejects.toThrow("请求失败，请稍后重试");
+});
+
+test("restores a poster and falls back when its image fails", async () => {
+  const posterUrl = "/api/assets/v1/poster";
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({ items: [{ ...video("v1"), posterUrl }] })));
+  render(<App />);
+  const poster = await screen.findByRole<HTMLImageElement>("img", { name: "视频封面 v1.mp4" });
+  expect(poster.src.endsWith(posterUrl)).toBe(true);
+  expect(poster.style.objectFit).toBe("contain");
+  fireEvent.error(poster);
+  expect(screen.queryByRole("img", { name: "视频封面 v1.mp4" })).toBeNull();
+  expect(screen.getByRole("img", { name: "视频封面占位 v1.mp4" })).toBeTruthy();
+  expect(screen.getByText("9.7 秒")).toBeTruthy();
+  expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "选择视频 v1.mp4" }).checked).toBe(false);
 });
 
 test("uploads two videos in one request, maps results, and toggles selection", async () => {
@@ -62,20 +339,97 @@ test("uploads two videos in one request, maps results, and toggles selection", a
   expect(screen.getByText("first.mp4")).toBeTruthy();
   expect(screen.getByText("second.mp4")).toBeTruthy();
   expect(screen.getAllByText("uploading")).toHaveLength(2);
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "清空视频" }).disabled).toBe(true);
   expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
   pending.resolve(json({ items: [
-    { filename: "first.mp4", status: "ready", asset: video("v1", "first.mp4") },
+    { filename: "first.mp4", status: "ready", asset: { ...video("v1", "first.mp4"), posterUrl: "/api/assets/v1/poster" } },
     { filename: "second.mp4", status: "ready", asset: video("v2", "second.mp4", 2_300_000) },
   ] }));
   await waitFor(() => expect(screen.getByText("已选 2 个视频")).toBeTruthy());
   expect(screen.getByText("9.7 秒")).toBeTruthy();
   expect(screen.getByText("2.3 秒")).toBeTruthy();
+  expect(screen.getByRole<HTMLImageElement>("img", { name: "视频封面 first.mp4" }).src.endsWith("/api/assets/v1/poster")).toBe(true);
+  expect(screen.getByRole("img", { name: "视频封面占位 second.mp4" })).toBeTruthy();
   const first = screen.getByRole<HTMLInputElement>("checkbox", { name: "选择视频 first.mp4" });
   expect(first.checked).toBe(true);
   fireEvent.click(first);
   expect(screen.getByText("已选 1 个视频")).toBeTruthy();
   fireEvent.click(first);
   expect(screen.getByText("已选 2 个视频")).toBeTruthy();
+});
+
+test("ignores a MIME identified image without uploading or adding a video row", async () => {
+  const fetchMock = vi.fn().mockResolvedValue(json({ items: [] }));
+  vi.stubGlobal("fetch", fetchMock);
+  const { container } = render(<App />);
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+  fireEvent.change(fileInput(container, 0), { target: { files: [new File(["png"], "picture.png", { type: "image/png" })] } });
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(within(screen.getByRole("list", { name: "视频素材列表" })).queryAllByRole("listitem")).toHaveLength(0);
+  expect(screen.getByRole("alert")).toHaveProperty("textContent", "已忽略 1 个非视频文件：picture.png");
+  expect(screen.getByRole("alert").classList.contains("ant-alert-error")).toBe(true);
+});
+
+test("uploads only video MIME from a mixed selection and clears the warning on the next valid selection", async () => {
+  const fetchMock = vi.fn().mockResolvedValueOnce(json({ items: [] }))
+    .mockResolvedValueOnce(json({ items: [{ filename: "clip.mp4", status: "ready", asset: video("v1", "clip.mp4") }] }))
+    .mockResolvedValueOnce(json({ items: [{ filename: "next.mp4", status: "ready", asset: video("v2", "next.mp4") }] }));
+  vi.stubGlobal("fetch", fetchMock);
+  const { container } = render(<App />);
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+  const clip = new File(["video"], "clip.mp4", { type: "video/mp4" });
+  const image = new File(["png"], "picture.png", { type: "image/png" });
+  fireEvent.change(fileInput(container, 0), { target: { files: [clip, image] } });
+  await screen.findByRole("checkbox", { name: "选择视频 clip.mp4" });
+  expect((fetchMock.mock.calls[1][1].body as FormData).getAll("files")).toEqual([clip]);
+  expect(within(screen.getByRole("list", { name: "视频素材列表" })).getAllByRole("listitem")).toHaveLength(1);
+  expect(screen.queryByText("picture.png")).toBeNull();
+  expect(screen.getByRole("alert")).toHaveProperty("textContent", "已忽略 1 个非视频文件：picture.png");
+  const next = new File(["video"], "next.mp4", { type: "video/mp4" });
+  fireEvent.change(fileInput(container, 0), { target: { files: [next] } });
+  await screen.findByRole("checkbox", { name: "选择视频 next.mp4" });
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+test("uploads a file with an empty MIME for server validation", async () => {
+  const fetchMock = vi.fn().mockResolvedValueOnce(json({ items: [] }))
+    .mockResolvedValueOnce(json({ items: [{ filename: "unknown", status: "ready", asset: video("v1", "unknown") }] }));
+  vi.stubGlobal("fetch", fetchMock);
+  const { container } = render(<App />);
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+  const unknown = new File(["video"], "unknown");
+  fireEvent.change(fileInput(container, 0), { target: { files: [unknown] } });
+  await screen.findByRole("checkbox", { name: "选择视频 unknown" });
+  expect((fetchMock.mock.calls[1][1].body as FormData).getAll("files")).toEqual([unknown]);
+});
+
+test("keeps one ready row when two uploaded filenames resolve to one video", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(json({ items: [] })).mockResolvedValueOnce(json({ items: [
+    { filename: "first.mp4", status: "ready", asset: video("v1", "first.mp4") },
+    { filename: "renamed.mp4", status: "ready", asset: video("v1", "first.mp4") },
+  ] })));
+  const { container } = render(<App />);
+  fireEvent.change(fileInput(container, 0), { target: { files: [
+    new File(["same"], "first.mp4"), new File(["same"], "renamed.mp4"),
+  ] } });
+  await waitFor(() => expect(screen.getByText("已选 1 个视频")).toBeTruthy());
+  expect(within(screen.getByRole("list", { name: "视频素材列表" })).getAllByRole("listitem")).toHaveLength(1);
+  expect(screen.getAllByRole("checkbox", { name: "选择视频 first.mp4" })).toHaveLength(1);
+  expect(screen.queryByText("renamed.mp4")).toBeNull();
+});
+
+test("reuploading a restored video selects its existing row", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(json({ items: [video("v1", "original.mp4")] }))
+    .mockResolvedValueOnce(json({ items: [
+      { filename: "renamed.mp4", status: "ready", asset: video("v1", "original.mp4") },
+    ] })));
+  const { container } = render(<App />);
+  await screen.findByText("original.mp4");
+  fireEvent.change(fileInput(container, 0), { target: { files: [new File(["same"], "renamed.mp4")] } });
+  await waitFor(() => expect(screen.getByText("已选 1 个视频")).toBeTruthy());
+  expect(within(screen.getByRole("list", { name: "视频素材列表" })).getAllByRole("listitem")).toHaveLength(1);
+  expect(screen.getByRole<HTMLInputElement>("checkbox", { name: "选择视频 original.mp4" }).checked).toBe(true);
+  expect(screen.queryByText("renamed.mp4")).toBeNull();
 });
 
 test("keeps partial failures separate and selects only ready videos", async () => {
@@ -90,6 +444,9 @@ test("keeps partial failures separate and selects only ready videos", async () =
   expect(screen.getByRole("checkbox", { name: "选择视频 good.mp4" })).toBeTruthy();
   expect(screen.queryByRole("checkbox", { name: "选择视频 bad.mp4" })).toBeNull();
   expect(screen.getByText("未检测到有效视频流")).toBeTruthy();
+  expect(screen.getByText("failed").classList.contains("ant-typography-danger")).toBe(true);
+  expect(screen.getByText("未检测到有效视频流").classList.contains("ant-typography-danger")).toBe(true);
+  expect(screen.getByRole("img", { name: "视频封面占位 bad.mp4" })).toBeTruthy();
   expect(screen.queryByText(/server\/path/)).toBeNull();
 });
 
@@ -200,6 +557,100 @@ test("batch network failure marks all pending videos failed", async () => {
   await waitFor(() => expect(screen.getAllByText("failed")).toHaveLength(2));
   expect(screen.getAllByText("网络连接失败，请稍后重试")).toHaveLength(2);
   expect(screen.getByText("已选 0 个视频")).toBeTruthy();
+});
+
+test("video upload progress follows real events and waits for the server response", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({ items: [] })));
+  MockXHR.autoRespond = false;
+  const { container } = render(<App />);
+  fireEvent.change(fileInput(container, 0), { target: { files: [new File(["a"], "a.mp4")] } });
+  const xhr = MockXHR.instances[0];
+  expect(screen.getByText("上传中 0%")).toBeTruthy();
+  xhr.progress(50, 100);
+  await screen.findByText("上传中 50%");
+  xhr.progress(100, 100);
+  await screen.findByText("上传完成，处理中");
+  expect(screen.getByText("uploading")).toBeTruthy();
+  expect(screen.queryByRole("checkbox", { name: "选择视频 a.mp4" })).toBeNull();
+  xhr.respond(200, { items: [{ filename: "a.mp4", status: "ready", asset: video("v1", "a.mp4") }] });
+  await screen.findByRole("checkbox", { name: "选择视频 a.mp4" });
+  await waitFor(() => expect(screen.queryByText("上传完成，处理中")).toBeNull());
+});
+
+test("video upload failure hides progress and keeps a failed row", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({ items: [] })));
+  MockXHR.autoRespond = false;
+  const { container } = render(<App />);
+  fireEvent.change(fileInput(container, 0), { target: { files: [new File(["a"], "a.mp4")] } });
+  MockXHR.instances[0].progress(50, 100);
+  await screen.findByText("上传中 50%");
+  MockXHR.instances[0].respond(413, "raw response");
+  await screen.findByText("文件超过上传限制");
+  await waitFor(() => expect(screen.queryByText("上传中 50%")).toBeNull());
+  expect(screen.getByText("failed")).toBeTruthy();
+});
+
+test("XHR video upload reports monotonic progress and validates success", async () => {
+  MockXHR.autoRespond = false;
+  const progress = vi.fn();
+  const file = new File(["a"], "a.mp4");
+  const promise = uploadVideos([file], undefined, progress);
+  const xhr = MockXHR.instances[0];
+  expect(xhr.method).toBe("POST");
+  expect(xhr.url).toBe("/api/assets/videos");
+  expect(xhr.body?.getAll("files")).toEqual([file]);
+  xhr.progress(50, 100);
+  xhr.progress(40, 100);
+  xhr.progress(100, 100);
+  expect(progress.mock.calls.map(([value]) => value.percent)).toEqual([50, 50, 100]);
+  xhr.respond(200, { items: [{ filename: "a.mp4", status: "ready", asset: video("v1") }] });
+  await expect(promise).resolves.toMatchObject([{ status: "ready", asset: { id: "v1" } }]);
+  const controller = new AbortController();
+  const completed = uploadVideos([file], controller.signal);
+  const completedXHR = MockXHR.instances.at(-1)!;
+  completedXHR.respond(200, { items: [{ filename: "a.mp4", status: "ready", asset: video("v1") }] });
+  await completed;
+  controller.abort();
+  expect(completedXHR.aborted).toBe(false);
+});
+
+test("XHR video upload preserves API errors and rejects malformed responses", async () => {
+  MockXHR.autoRespond = false;
+  const file = new File(["a"], "a.mp4");
+  let promise = uploadVideos([file]);
+  MockXHR.instances.at(-1)!.respond(413, "not json");
+  await expect(promise).rejects.toThrow("文件超过上传限制");
+  promise = uploadVideos([file]);
+  MockXHR.instances.at(-1)!.respond(422, { error: { code: "INVALID_VIDEO", message: "raw private text" } });
+  await expect(promise).rejects.toMatchObject({ code: "INVALID_VIDEO", message: "未检测到有效视频流" });
+  promise = uploadVideos([file]);
+  MockXHR.instances.at(-1)!.respond(500, "<html>raw</html>");
+  await expect(promise).rejects.toThrow("请求失败，请稍后重试");
+  promise = uploadVideos([file]);
+  MockXHR.instances.at(-1)!.respond(200, { items: [] });
+  await expect(promise).rejects.toThrow("请求失败，请稍后重试");
+  promise = uploadVideos([file]);
+  MockXHR.instances.at(-1)!.respond(200, { items: [{ filename: "a.mp4", status: "ready", asset: { id: "v1" } }] });
+  await expect(promise).rejects.toThrow("请求失败，请稍后重试");
+});
+
+test("XHR video upload handles network errors and AbortSignal", async () => {
+  MockXHR.autoRespond = false;
+  const file = new File(["a"], "a.mp4");
+  let promise = uploadVideos([file]);
+  MockXHR.instances.at(-1)!.onerror?.();
+  await expect(promise).rejects.toThrow("网络连接失败，请稍后重试");
+  const alreadyAborted = new AbortController();
+  alreadyAborted.abort();
+  const count = MockXHR.instances.length;
+  await expect(uploadVideos([file], alreadyAborted.signal)).rejects.toMatchObject({ name: "AbortError" });
+  expect(MockXHR.instances).toHaveLength(count);
+  const controller = new AbortController();
+  promise = uploadVideos([file], controller.signal);
+  const xhr = MockXHR.instances.at(-1)!;
+  controller.abort();
+  await expect(promise).rejects.toMatchObject({ name: "AbortError" });
+  expect(xhr.aborted).toBe(true);
 });
 
 test("413 and non JSON errors remain readable and do not leak response bodies", async () => {

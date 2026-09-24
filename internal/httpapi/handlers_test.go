@@ -15,9 +15,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
+	"github.com/lifei6671/clipweaver/internal/domain"
 	"github.com/lifei6671/clipweaver/internal/media"
 	"github.com/lifei6671/clipweaver/internal/service"
 	"github.com/lifei6671/clipweaver/internal/storage"
@@ -55,6 +57,16 @@ func (testProber) ProbeAudio(_ context.Context, path string) (media.Result, erro
 }
 
 func testApp(t *testing.T, root string) *fiber.App {
+	return testAppWithPoster(t, root, testPoster(func(string) error { return errors.New("poster unavailable") }))
+}
+
+type testPoster func(string) error
+
+func (p testPoster) Generate(_ context.Context, _, output string, _ domain.DurationUS) error {
+	return p(output)
+}
+
+func testAppWithPoster(t *testing.T, root string, poster testPoster) *fiber.App {
 	t.Helper()
 	store, err := storage.NewLocal(root)
 	if err != nil {
@@ -62,7 +74,7 @@ func testApp(t *testing.T, root string) *fiber.App {
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	app := fiber.New(fiber.Config{ErrorHandler: ErrorHandler(logger)})
-	Register(app, service.NewAssetService(store, testProber{}), logger)
+	Register(app, service.NewAssetService(store, testProber{}, poster, logger), logger)
 	return app
 }
 
@@ -148,6 +160,9 @@ func TestVideoBatchAndDiskReload(t *testing.T) {
 		if entry["status"] != "ready" || entry["filename"] != []string{"a.mp4", "b.mp4"}[i] || asset["name"] != entry["filename"] || asset["durationUs"] != float64(8_000_000) || asset["kind"] != "video" {
 			t.Fatalf("incorrect ready item: %#v", entry)
 		}
+		if _, ok := asset["posterUrl"]; ok {
+			t.Fatalf("failed poster should not have URL: %#v", asset)
+		}
 		if _, err := uuid.Parse(id); err != nil || ids[id] {
 			t.Fatalf("invalid or duplicate id %q", id)
 		}
@@ -162,6 +177,214 @@ func TestVideoBatchAndDiskReload(t *testing.T) {
 	listed := items(t, call(t, app, httptest.NewRequest(http.MethodGet, "/api/assets", nil), 200))
 	if len(listed) != 2 || item(t, listed[0])["id"].(string) >= item(t, listed[1])["id"].(string) {
 		t.Fatalf("reloaded assets=%#v", listed)
+	}
+}
+
+func TestVideoBatchReusesContentAndKeepsPublicDigestPrivate(t *testing.T) {
+	root := t.TempDir()
+	posterCalls := 0
+	app := testAppWithPoster(t, root, testPoster(func(path string) error {
+		posterCalls++
+		return os.WriteFile(path, []byte("jpeg"), 0600)
+	}))
+	batch := items(t, call(t, app, uploadRequest(t, "/api/assets/videos", "files",
+		testFile{"one.mp4", "same"}, testFile{"renamed.mp4", "same"}), 200))
+	if len(batch) != 2 {
+		t.Fatalf("batch = %#v", batch)
+	}
+	first := item(t, item(t, batch[0])["asset"])
+	second := item(t, item(t, batch[1])["asset"])
+	id := first["id"].(string)
+	if item(t, batch[0])["status"] != "ready" || item(t, batch[1])["status"] != "ready" ||
+		second["id"] != id || second["name"] != "one.mp4" || first["posterUrl"] != second["posterUrl"] || posterCalls != 1 {
+		t.Fatalf("deduped batch = %#v, poster calls = %d", batch, posterCalls)
+	}
+	for _, asset := range []map[string]any{first, second} {
+		if _, exposed := asset["contentSHA256"]; exposed {
+			t.Fatalf("digest exposed: %#v", asset)
+		}
+	}
+	listed := items(t, call(t, app, httptest.NewRequest(http.MethodGet, "/api/assets", nil), 200))
+	if len(listed) != 1 || item(t, listed[0])["id"] != id {
+		t.Fatalf("listed = %#v", listed)
+	}
+	if _, exposed := item(t, listed[0])["contentSHA256"]; exposed {
+		t.Fatal("digest exposed in list")
+	}
+	app = testApp(t, root)
+	again := items(t, call(t, app, uploadRequest(t, "/api/assets/videos", "files", testFile{"one.mp4", "different"}), 200))
+	if item(t, item(t, again[0])["asset"])["id"] == id {
+		t.Fatalf("same name, different bytes reused: %#v", again)
+	}
+	entries, err := os.ReadDir(filepath.Join(root, "assets"))
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("asset dirs = %v, %v", entries, err)
+	}
+}
+
+func TestDeleteVideoRemovesDigestGroupAndKeepsOtherAssets(t *testing.T) {
+	root := t.TempDir()
+	app := testAppWithPoster(t, root, testPoster(func(path string) error {
+		return os.WriteFile(path, []byte("jpeg"), 0600)
+	}))
+	first := item(t, items(t, call(t, app, uploadRequest(t, "/api/assets/videos", "files", testFile{"same.mp4", "original"}), 200))[0])
+	firstID := item(t, first["asset"])["id"].(string)
+	if _, err := os.Stat(filepath.Join(root, "assets", firstID, "poster.jpg")); err != nil {
+		t.Fatalf("poster fixture was not created: %v", err)
+	}
+	other := item(t, items(t, call(t, app, uploadRequest(t, "/api/assets/videos", "files", testFile{"same.mp4", "different"}), 200))[0])
+	otherID := item(t, other["asset"])["id"].(string)
+	audio := item(t, call(t, app, uploadRequest(t, "/api/assets/audio", "file", testFile{"voice.m4a", "voice"}), 200)["asset"])
+	audioID := audio["id"].(string)
+	store, err := storage.NewLocal(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicate, err := store.ReadAsset(firstID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicate.ID = storage.NewAssetID()
+	duplicate.ContentSHA256 = "" // Historical manifest; deletion must backfill before comparing.
+	duplicate.CreatedAt = duplicate.CreatedAt.Add(time.Hour)
+	duplicatePath, err := store.SourcePath(duplicate.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Dir(duplicatePath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(duplicatePath, []byte("original"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveAsset(duplicate); err != nil {
+		t.Fatal(err)
+	}
+	if got := call(t, app, httptest.NewRequest(http.MethodDelete, "/api/assets/"+firstID, nil), 200); got["id"] != firstID || got["deleted"] != true || len(got) != 2 {
+		t.Fatalf("delete response = %#v", got)
+	}
+	for _, id := range []string{firstID, duplicate.ID} {
+		if _, err := os.Stat(filepath.Join(root, "assets", id)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("asset directory %s survived deletion: %v", id, err)
+		}
+	}
+	for _, id := range []string{otherID, audioID} {
+		if _, err := os.Stat(filepath.Join(root, "assets", id)); err != nil {
+			t.Fatalf("unrelated asset %s was deleted: %v", id, err)
+		}
+	}
+	app = testApp(t, root)
+	listed := items(t, call(t, app, httptest.NewRequest(http.MethodGet, "/api/assets", nil), 200))
+	if len(listed) != 2 {
+		t.Fatalf("assets after reload = %#v", listed)
+	}
+	for _, entry := range listed {
+		id := item(t, entry)["id"]
+		if id != otherID && id != audioID {
+			t.Fatalf("deleted video revived: %#v", listed)
+		}
+	}
+	for _, tc := range []struct {
+		id, code string
+		status   int
+	}{
+		{audioID, "INVALID_REQUEST", 400},
+		{"not-a-uuid", "INVALID_ID", 400},
+		{firstID, "ASSET_NOT_FOUND", 404},
+	} {
+		result := call(t, app, httptest.NewRequest(http.MethodDelete, "/api/assets/"+tc.id, nil), tc.status)
+		if got := item(t, result["error"])["code"]; got != tc.code {
+			t.Fatalf("delete %s: code=%v want=%s", tc.id, got, tc.code)
+		}
+	}
+}
+
+func TestDeleteVideoWithoutPosterRemovesDirectory(t *testing.T) {
+	root := t.TempDir()
+	app := testApp(t, root)
+	response := items(t, call(t, app, uploadRequest(t, "/api/assets/videos", "files", testFile{"plain.mp4", "video"}), 200))
+	id := item(t, item(t, response[0])["asset"])["id"].(string)
+	if got := call(t, app, httptest.NewRequest(http.MethodDelete, "/api/assets/"+id, nil), 200); got["deleted"] != true {
+		t.Fatalf("delete response = %#v", got)
+	}
+	if _, err := os.Stat(filepath.Join(root, "assets", id)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("asset directory survived deletion: %v", err)
+	}
+	if listed := items(t, call(t, app, httptest.NewRequest(http.MethodGet, "/api/assets", nil), 200)); len(listed) != 0 {
+		t.Fatalf("deleted video remains listed: %#v", listed)
+	}
+}
+
+func TestPosterAPIAndReload(t *testing.T) {
+	root := t.TempDir()
+	jpeg := []byte{0xff, 0xd8, 0xff, 0xd9}
+	posterCalls := 0
+	app := testAppWithPoster(t, root, testPoster(func(path string) error {
+		posterCalls++
+		return os.WriteFile(path, jpeg, 0600)
+	}))
+	videoResult := items(t, call(t, app, uploadRequest(t, "/api/assets/videos", "files", testFile{"clip.mp4", "video"}), 200))
+	video := item(t, item(t, videoResult[0])["asset"])
+	id := video["id"].(string)
+	url := "/api/assets/" + id + "/poster"
+	if video["posterUrl"] != url || video["durationUs"] != float64(8_000_000) {
+		t.Fatalf("video response = %#v", video)
+	}
+	response, err := app.Test(httptest.NewRequest(http.MethodGet, url, nil), -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil || response.StatusCode != 200 || response.Header.Get("Content-Type") != "image/jpeg" || !bytes.Equal(data, jpeg) {
+		t.Fatalf("poster response: status=%d type=%q data=%v error=%v", response.StatusCode, response.Header.Get("Content-Type"), data, err)
+	}
+	audioResult := call(t, app, uploadRequest(t, "/api/assets/audio", "file", testFile{"voice.m4a", "audio"}), 200)
+	audio := item(t, audioResult["asset"])
+	if _, ok := audio["posterUrl"]; ok || posterCalls != 1 {
+		t.Fatalf("audio response has poster: %#v", audio)
+	}
+	app = testApp(t, root)
+	listed := items(t, call(t, app, httptest.NewRequest(http.MethodGet, "/api/assets", nil), 200))
+	for _, entry := range listed {
+		asset := item(t, entry)
+		if asset["kind"] == "video" && asset["posterUrl"] != url {
+			t.Fatalf("reloaded video has no poster: %#v", asset)
+		}
+		if asset["kind"] == "audio" {
+			if _, ok := asset["posterUrl"]; ok {
+				t.Fatalf("reloaded audio has poster: %#v", asset)
+			}
+		}
+	}
+	for _, tc := range []struct {
+		id, code string
+		status   int
+	}{
+		{"not-a-uuid", "INVALID_ID", 400},
+		{uuid.NewString(), "ASSET_NOT_FOUND", 404},
+		{audio["id"].(string), "ASSET_NOT_FOUND", 404},
+	} {
+		result := call(t, app, httptest.NewRequest(http.MethodGet, "/api/assets/"+tc.id+"/poster", nil), tc.status)
+		if got := item(t, result["error"])["code"]; got != tc.code {
+			t.Fatalf("poster error for %s = %v", tc.id, got)
+		}
+	}
+	if err := os.Remove(filepath.Join(root, "assets", id, "poster.jpg")); err != nil {
+		t.Fatal(err)
+	}
+	missing := call(t, app, httptest.NewRequest(http.MethodGet, url, nil), 404)
+	if item(t, missing["error"])["code"] != "ASSET_NOT_FOUND" {
+		t.Fatalf("missing poster = %#v", missing)
+	}
+	listed = items(t, call(t, app, httptest.NewRequest(http.MethodGet, "/api/assets", nil), 200))
+	for _, entry := range listed {
+		asset := item(t, entry)
+		if asset["kind"] == "video" {
+			if _, ok := asset["posterUrl"]; ok {
+				t.Fatalf("historical video has poster URL: %#v", asset)
+			}
+		}
 	}
 }
 

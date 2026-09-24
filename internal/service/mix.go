@@ -3,10 +3,13 @@ package service
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -117,6 +120,8 @@ func (s *MixService) Create(request domain.MixRequest) (meta domain.MixMeta, err
 	defer cancel()
 	videos := make([]domain.Asset, 0, len(request.VideoIDs))
 	videoMap := make(map[string]domain.Asset, len(request.VideoIDs))
+	seenContent := make(map[string]bool, len(request.VideoIDs))
+	videoIDs := make([]string, 0, len(request.VideoIDs))
 	var available domain.DurationUS
 	for _, id := range request.VideoIDs {
 		asset, readErr := s.store.ReadAsset(id)
@@ -126,7 +131,17 @@ func (s *MixService) Create(request domain.MixRequest) (meta domain.MixMeta, err
 		if asset.Kind != domain.AssetKindVideo {
 			return meta, ErrInvalidVideo
 		}
+		digest, decodeErr := hex.DecodeString(asset.ContentSHA256)
+		if decodeErr != nil || len(digest) != sha256.Size {
+			return meta, fmt.Errorf("invalid video content digest for asset %s", asset.ID)
+		}
+		contentSHA256 := strings.ToLower(asset.ContentSHA256)
+		if seenContent[contentSHA256] {
+			continue
+		}
+		seenContent[contentSHA256] = true
 		videos = append(videos, asset)
+		videoIDs = append(videoIDs, asset.ID)
 		videoMap[asset.ID] = asset
 		if available <= domain.DurationUS(^uint64(0)>>1)-asset.DurationUS {
 			available += asset.DurationUS
@@ -161,7 +176,7 @@ func (s *MixService) Create(request domain.MixRequest) (meta domain.MixMeta, err
 	if stageErr != nil {
 		return meta, stageErr
 	}
-	meta = domain.MixMeta{ID: id, Status: domain.MixStatusRendering, Seed: seed, DurationUS: audio.DurationUS, VideoIDs: append([]string(nil), request.VideoIDs...), AudioID: request.AudioID, CreatedAt: time.Now().UTC()}
+	meta = domain.MixMeta{ID: id, Status: domain.MixStatusRendering, Seed: seed, DurationUS: audio.DurationUS, VideoIDs: videoIDs, AudioID: request.AudioID, CreatedAt: time.Now().UTC()}
 	defer func() {
 		if err != nil {
 			meta.Status = domain.MixStatusFailed
@@ -225,6 +240,9 @@ func (s *MixService) Create(request domain.MixRequest) (meta domain.MixMeta, err
 }
 
 func assetReadError(err error) error {
+	if errors.Is(err, storage.ErrVideoDigest) || errors.Is(err, storage.ErrCorruptManifest) {
+		return err
+	}
 	if errors.Is(err, os.ErrNotExist) {
 		return ErrAssetNotFound
 	}

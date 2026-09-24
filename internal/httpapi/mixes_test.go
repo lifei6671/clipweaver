@@ -75,6 +75,67 @@ func mixError(t *testing.T, got map[string]any, code string) {
 	}
 }
 
+func TestMixHTTPDedupesHistoricalVideoContent(t *testing.T) {
+	app, store, _, videoID, audioID := mixHTTPFixture(t, t.TempDir(), nil, nil)
+	video, err := store.ReadAsset(videoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	video.DurationUS = 5_000_000
+	if err := store.SaveAsset(video); err != nil {
+		t.Fatal(err)
+	}
+	duplicate := video
+	duplicate.ID = storage.NewAssetID()
+	duplicate.ContentSHA256 = ""
+	if err := store.SaveAsset(duplicate); err != nil {
+		t.Fatal(err)
+	}
+	path, err := store.SourcePath(duplicate.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("source"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"videoIds":["` + duplicate.ID + `","` + videoID + `"],"audioId":"` + audioID + `","seed":"42"}`
+	result := mixPost(t, app, body, 422)
+	mixError(t, result, "INSUFFICIENT_VIDEO_DURATION")
+	if details := item(t, result["error"])["details"].(map[string]any); details["missingDurationUs"] != float64(4_700_000) {
+		t.Fatalf("wrong available duration: %#v", result)
+	}
+	manifestPath := filepath.Join(filepath.Dir(path), "meta.json")
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	manifest["contentSHA256"] = "broken"
+	data, err = json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	mixError(t, mixPost(t, app, body, 500), "INTERNAL_ERROR")
+	manifest["contentSHA256"] = ""
+	data, err = json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	mixError(t, mixPost(t, app, body, 500), "INTERNAL_ERROR")
+}
+
 func TestMixRequestErrorsAndSeed(t *testing.T) {
 	app, store, _, videoID, audioID := mixHTTPFixture(t, t.TempDir(), nil, func() (int64, error) { return math.MinInt64, nil })
 	for _, tc := range []struct {
@@ -194,6 +255,27 @@ func TestMixFileRangeDownloadAndReload(t *testing.T) {
 		t.Fatal(err)
 	}
 	mixError(t, call(t, reloaded, httptest.NewRequest(http.MethodGet, "/api/mixes/"+id+"/file", nil), 404), "MIX_NOT_FOUND")
+}
+
+func TestCompletedMixOutputSurvivesVideoDeletion(t *testing.T) {
+	root := t.TempDir()
+	app, store, _, videoID, audioID := mixHTTPFixture(t, root, nil, nil)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	Register(app, service.NewAssetService(store, testProber{}, testPoster(func(string) error { return nil }), logger), logger)
+	result := mixPost(t, app, `{"videoIds":["`+videoID+`"],"audioId":"`+audioID+`"}`, 200)
+	mixID := result["id"].(string)
+	call(t, app, httptest.NewRequest(http.MethodDelete, "/api/assets/"+videoID, nil), 200)
+	for _, suffix := range []string{"file", "download"} {
+		resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/api/mixes/"+mixID+"/"+suffix, nil), -1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil || resp.StatusCode != 200 || string(body) != "0123456789" {
+			t.Fatalf("%s after asset deletion: status=%d body=%q err=%v", suffix, resp.StatusCode, body, err)
+		}
+	}
 }
 
 func TestMixRenderErrorsDoNotLeak(t *testing.T) {

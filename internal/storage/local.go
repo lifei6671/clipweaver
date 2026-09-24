@@ -1,12 +1,16 @@
 package storage
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,8 +19,10 @@ import (
 
 var ErrInvalidID = errors.New("INVALID_ID")
 var ErrCorruptManifest = errors.New("CORRUPT_MANIFEST")
+var ErrVideoDigest = errors.New("VIDEO_DIGEST_FAILED")
 
 const sourceName = "source.bin"
+const posterName = "poster.jpg"
 
 type Local struct {
 	root string
@@ -115,6 +121,47 @@ func (s *Local) SourcePath(id string) (string, error) {
 	return path, nil
 }
 
+// PosterPath derives the server-owned filename from a validated asset ID.
+func (s *Local) PosterPath(id string) (string, error) {
+	_, dir, err := s.assetDir(id)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, posterName), nil
+}
+
+// OpenPoster only serves a regular poster belonging to a committed video asset.
+func (s *Local) OpenPoster(id string) (*os.File, error) {
+	asset, err := s.ReadAsset(id)
+	if err != nil {
+		return nil, err
+	}
+	if asset.Kind != domain.AssetKindVideo {
+		return nil, os.ErrNotExist
+	}
+	path, err := s.PosterPath(id)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Size() == 0 {
+		return nil, os.ErrNotExist
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	opened, err := file.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
+		file.Close()
+		return nil, os.ErrNotExist
+	}
+	return file, nil
+}
+
 // NewUploadStaging creates a server-named directory for an upcoming upload.
 func (s *Local) NewUploadStaging() (string, string, error) {
 	return s.newStaging("uploads")
@@ -172,7 +219,7 @@ func (s *Local) RemoveAsset(id string) error {
 	return os.RemoveAll(dir)
 }
 
-// ListAssets reads committed manifests from disk in stable ID order.
+// ListAssets reads committed manifests in stable ID order.
 func (s *Local) ListAssets() ([]domain.Asset, error) {
 	entries, err := os.ReadDir(filepath.Join(s.root, "assets"))
 	if err != nil {
@@ -204,13 +251,14 @@ func (s *Local) ListAssets() ([]domain.Asset, error) {
 }
 
 type assetManifest struct {
-	ID         string            `json:"id"`
-	Kind       domain.AssetKind  `json:"kind"`
-	Name       string            `json:"name"`
-	DurationUS domain.DurationUS `json:"durationUS"`
-	Width      int               `json:"width"`
-	Height     int               `json:"height"`
-	CreatedAt  time.Time         `json:"createdAt"`
+	ID            string            `json:"id"`
+	Kind          domain.AssetKind  `json:"kind"`
+	Name          string            `json:"name"`
+	DurationUS    domain.DurationUS `json:"durationUS"`
+	Width         int               `json:"width"`
+	Height        int               `json:"height"`
+	CreatedAt     time.Time         `json:"createdAt"`
+	ContentSHA256 string            `json:"contentSHA256,omitempty"`
 }
 
 // SaveAsset writes a complete manifest through a synced file in the same directory.
@@ -232,7 +280,7 @@ func (s *Local) SaveAsset(asset domain.Asset) error {
 	manifest := assetManifest{
 		ID: id, Kind: asset.Kind, Name: asset.Name,
 		DurationUS: asset.DurationUS, Width: asset.Width, Height: asset.Height,
-		CreatedAt: asset.CreatedAt,
+		CreatedAt: asset.CreatedAt, ContentSHA256: asset.ContentSHA256,
 	}
 	data, err := json.Marshal(manifest)
 	if err != nil {
@@ -286,13 +334,52 @@ func (s *Local) ReadAsset(id string) (domain.Asset, error) {
 	asset := domain.Asset{
 		ID: canonical, Kind: manifest.Kind, Name: manifest.Name,
 		DurationUS: manifest.DurationUS, Width: manifest.Width, Height: manifest.Height,
-		CreatedAt: manifest.CreatedAt,
+		CreatedAt: manifest.CreatedAt, ContentSHA256: manifest.ContentSHA256,
 	}
 	if err := validateAsset(asset); err != nil {
 		return domain.Asset{}, err
 	}
 	asset.StoredPath, err = s.SourcePath(canonical)
-	return asset, err
+	if err != nil {
+		return domain.Asset{}, err
+	}
+	if asset.Kind == domain.AssetKindVideo {
+		if asset.ContentSHA256 == "" {
+			source, openErr := os.Open(asset.StoredPath)
+			if openErr != nil {
+				return domain.Asset{}, fmt.Errorf("%w: open source for asset %s: %w", ErrVideoDigest, canonical, openErr)
+			}
+			hash := sha256.New()
+			_, hashErr := io.Copy(hash, source)
+			closeErr := source.Close()
+			if hashErr != nil || closeErr != nil {
+				return domain.Asset{}, fmt.Errorf("%w: hash source for asset %s: %w", ErrVideoDigest, canonical, errors.Join(hashErr, closeErr))
+			}
+			asset.ContentSHA256 = hex.EncodeToString(hash.Sum(nil))
+			if saveErr := s.SaveAsset(asset); saveErr != nil {
+				return domain.Asset{}, fmt.Errorf("%w: save digest for asset %s: %w", ErrVideoDigest, canonical, saveErr)
+			}
+		} else {
+			digest, decodeErr := hex.DecodeString(asset.ContentSHA256)
+			if decodeErr != nil || len(digest) != sha256.Size {
+				return domain.Asset{}, fmt.Errorf("%w: invalid contentSHA256 for asset %s", ErrCorruptManifest, canonical)
+			}
+			normalized := strings.ToLower(asset.ContentSHA256)
+			if normalized != asset.ContentSHA256 {
+				asset.ContentSHA256 = normalized
+				if saveErr := s.SaveAsset(asset); saveErr != nil {
+					return domain.Asset{}, fmt.Errorf("%w: normalize digest for asset %s: %w", ErrVideoDigest, canonical, saveErr)
+				}
+			}
+		}
+		poster, pathErr := s.PosterPath(canonical)
+		if pathErr != nil {
+			return domain.Asset{}, pathErr
+		}
+		info, statErr := os.Lstat(poster)
+		asset.HasPoster = statErr == nil && info.Mode().IsRegular() && info.Size() > 0
+	}
+	return asset, nil
 }
 
 func validateAsset(asset domain.Asset) error {

@@ -28,6 +28,8 @@ v0.1 必须满足：
 14. 从只安装 Docker 和 Docker Compose 的新环境执行 `docker compose up --build -d` 可以构建并运行。
 15. 提供核心规则自动化测试、真实 FFmpeg 集成测试、演示素材生成脚本、README 和 AI-NOTES.md。
 
+视频素材封面缩略图是现有实现中的非阻塞 UI 增强，不属于上述 v0.1 原题必做条件；无封面时基础上传、选择和混剪流程仍须可用。
+
 v0.1 明确不包含：
 
 - 用户登录与权限系统
@@ -376,6 +378,20 @@ FFprobe 解析多路 stream 时使用固定规则：同类型 stream 中优先�
 
 前端展示的媒体时长统一使用服务端 FFprobe 结果。
 
+### 7.4 视频封面（非阻塞增强）
+
+视频通过 FFprobe 校验并提升到正式 asset 目录后，后端以 best-effort 方式调用本地 FFmpeg 抽帧生成 `poster.jpg`。抽帧时间优先取 `min(1s, duration × 20%)`，极短视频从 0 秒取帧；保留 FFmpeg 默认 autorotate，输出 JPEG，按原比例将最长边限制在约 320px，调用上限为 10 秒。生成失败只记录诊断日志，视频仍可成为 `ready` asset；音频不生成封面。前端展示的 `durationUs` 仍以后端 FFprobe 结果为准，不从封面或浏览器视频元素重新计算。
+
+历史视频先按内容摘要确定最终可见的 canonical asset，再对其中无封面的 video 按需 best-effort 补图；被隐藏的重复视频不补图。重复上传命中无封面的历史 canonical asset 时也尝试补图，成功后本次响应即可返回 `posterUrl`。
+
+### 7.5 视频源文件内容去重
+
+上传视频写入 staging `source.bin` 时同步流式计算 SHA-256，摘要仅存于后端 asset manifest，不进入公开 API。摘要相同的 video asset 视为同一素材，不依赖文件名、时长或文件大小；audio asset 保持原有创建语义。单进程内，视频查重到 promote/save 使用互斥锁串行化。重复上传返回已有 canonical asset 及其封面状态，清理本次 staging，不创建新 asset 目录；若历史 canonical 无封面，则按 §7.4 补图。
+
+历史 manifest 可不含摘要；列举素材及上传查重时，后端按需流式读取旧 `source.bin` 并原子回写摘要。多个历史视频摘要相同时，以最早 `CreatedAt` 为 canonical，时间相同则按 ID 排序；`GET /api/assets` 仅显示 canonical，原有 duplicate 目录和源文件不删除，旧 ID 仍可用于 Mix。摘要读取或回写失败会报内部错误，不把无法比较的素材当作新素材。此增强只合并重复上传的同一源文件；Planner 仍可从一个 asset 取多个互不重叠 clips。
+
+Mix 编排层同样按 `ContentSHA256` 防御性折叠历史重复 ID，避免重复计算可用时长；不改变 Planner 从同一 canonical asset 取多个互不重叠 clips 的规则。
+
 ## 8. 本地存储
 
 不使用数据库，采用“一资源一目录 + manifest”：
@@ -385,7 +401,8 @@ data/
 ├─ assets/
 │  └─ <asset-id>/
 │     ├─ source.bin
-│     └─ meta.json
+│     ├─ meta.json
+│     └─ poster.jpg  (仅视频、可选、派生文件)
 ├─ mixes/
 │  └─ <mix-id>/
 │     ├─ meta.json
@@ -403,6 +420,7 @@ data/
 约束：
 
 - manifest 采用临时文件 + rename 原子写入。
+- `poster.jpg` 仅在生成成功后写入正式目录；`meta.json` 不记录封面业务权威字段，`HasPoster` / `posterUrl` 依据规范文件的存在性派生，历史无封面 asset 仍可读取。
 - 上传、混剪完成或失败后清理对应 tmp 目录。
 - 应用启动时扫描 `data/tmp/uploads` 与 `data/tmp/mixes` 并清理孤儿目录；v0.1 不恢复中断中的渲染任务。
 - assets 与 mixes 通过 Docker volume 持久化。
@@ -541,6 +559,8 @@ FFmpeg 命令构建测试还必须证明 mux 阶段只映射 `final-video.mp4` �
 }
 ```
 
+上传成功项中的 video asset 仅在封面存在时附带可选 `posterUrl`（`/api/assets/<asset-id>/poster`）；生成失败不改变 `ready` 状态，audio asset 不带该字段。
+
 ### POST /api/assets/audio
 
 - multipart/form-data
@@ -574,7 +594,21 @@ FFmpeg 命令构建测试还必须证明 mux 阶段只映射 `final-video.mp4` �
 }
 ```
 
+列表中的 video asset 仅在封面存在时附带可选 `posterUrl`；历史无封面视频仍正常列出，audio asset 不带该字段。
+
 `durationUs` 对短素材使用 JSON number；它在本题范围远小于 JavaScript 安全整数上限。
+
+### GET /api/assets/:id/poster
+
+从经 UUID 校验的 video asset 目录读取封面，成功返回 `image/jpeg`。非法 ID 返回 `400 INVALID_ID`；asset 不存在、封面不存在或 ID 对应 audio asset 时返回 `404 ASSET_NOT_FOUND`。此接口不影响素材列表、上传或混剪 API。
+
+### DELETE /api/assets/:id
+
+持久化删除 video asset，成功返回 `200 {"id":"<asset-id>","deleted":true}`。非法 UUID 返回 `400 INVALID_ID`，不存在返回 `404 ASSET_NOT_FOUND`，audio asset 返回 `400 INVALID_REQUEST`。
+
+服务层在与视频上传、列表共用的 `videoMu` 内先用 `ReadAsset` 校验目标，再按 `ContentSHA256` 找出同源历史 video duplicate，并逐个调用安全的 `RemoveAsset` 删除整个目录（含源文件、元数据和可选封面）。这避免删除 canonical 后旧 duplicate 在列表中复活；同名但摘要不同的素材不受影响。删除中途失败会返回内部错误并记录日志；本地文件系统 v0.1 不提供事务回滚，已删部分可能无法恢复。
+
+历史 MixMeta/Plan 可以保留被删素材 ID；已完成 mix 继续从独立的 `output.mp4` 提供预览和下载，不级联删除。当前产品不提供重新执行历史 mix。
 
 ### POST /api/mixes
 
@@ -671,7 +705,7 @@ v0.1 使用单页面：
 ```text
 视频素材
   ├─ 上传多个视频
-  ├─ 名称 / 时长 / 状态
+  ├─ 缩略图 / 名称 / 时长 / 状态
   └─ Checkbox 选择
 
 口播音频
@@ -695,6 +729,12 @@ v0.1 使用单页面：
 - 失败后保留素材选择，可直接重新制作。
 - 不增加登录、复杂导航和重量级状态管理。
 - 页面刷新后恢复 assets，但 v0.1 不恢复上一次页面中的 mix 结果展示；这属于 README 已知限制。
+- 视频缩略图使用后端 `posterUrl`；封面生成失败或图片加载失败时显示占位，仍保留选择、状态、错误与服务端时长。
+- 视频上传前仅用浏览器 File.type 的非空 MIME 快速过滤明确非视频文件；MIME 为空仍上传，后端 FFprobe 是最终媒体校验依据，不以扩展名判断。
+- 视频 multipart 上传使用原生 XMLHttpRequest 的 `upload.onprogress` 展示批次真实字节进度，不为单文件伪造进度；音频上传仍使用 fetch。100% 仅表示请求体传输完成，此时显示“上传完成，处理中”；视频 ready 仍以后端响应为准，请求结束后隐藏进度条。
+- ready 视频行可删除服务端素材，failed 行“移除”只清理前端本地项；删除失败保留该行并显示错误。混剪期间禁用删除。
+- “重置选择”只清空当前视频勾选及页面中的 mixResult/mixError，不删除已上传素材，不改变口播选择或 seed；混剪期间禁用。
+- “清空视频”按当前页面 ready 行的唯一 asset ID 顺序调用现有 `DELETE /api/assets/:id`，成功删除的行立即从页面移除；全部成功后清理 failed 本地行、视频选择与当前 mixResult/mixError。若某次删除失败，停止后续请求，保留失败和未处理的 ready 行及 failed 行，并显示错误。口播、selectedAudioId、seed 和服务端已完成的 mix 输出均保留。上传、单条删除、混剪或清空进行中禁用清空；清空期间禁用视频上传、单条删除与开始混剪，视频上传期间也禁用单条删除。
 
 ## 15. 自动化测试
 

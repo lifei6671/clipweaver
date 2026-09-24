@@ -1,8 +1,10 @@
 package storage
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,6 +70,9 @@ func TestLocalManifestRestartAndCleanup(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if err := os.WriteFile(source, []byte("video source"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	store, err = NewLocal(root)
 	if err != nil {
 		t.Fatal(err)
@@ -85,6 +90,80 @@ func TestLocalManifestRestartAndCleanup(t *testing.T) {
 	}
 }
 
+func TestReadAssetBackfillsHistoricalVideoAndRejectsCorruptDigest(t *testing.T) {
+	store, err := NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := time.Date(2026, 9, 23, 1, 2, 3, 0, time.UTC)
+	ids := []string{NewAssetID(), NewAssetID()}
+	content := []byte("same historical source")
+	for _, id := range ids {
+		asset := domain.Asset{ID: id, Kind: domain.AssetKindVideo, Name: "original.mp4",
+			DurationUS: 5_000_000, Width: 1920, Height: 1080, CreatedAt: created}
+		if err := store.SaveAsset(asset); err != nil {
+			t.Fatal(err)
+		}
+		path, err := store.SourcePath(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, content, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wantDigest := fmt.Sprintf("%x", sha256.Sum256(content))
+	for _, id := range ids {
+		asset, err := store.ReadAsset(id)
+		if err != nil || asset.ContentSHA256 != wantDigest || asset.Name != "original.mp4" ||
+			asset.DurationUS != 5_000_000 || asset.Width != 1920 || asset.Height != 1080 || !asset.CreatedAt.Equal(created) {
+			t.Fatalf("historical asset = %+v, %v", asset, err)
+		}
+		manifest, err := os.ReadFile(filepath.Join(store.root, "assets", id, "meta.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]any
+		if err := json.Unmarshal(manifest, &fields); err != nil {
+			t.Fatal(err)
+		}
+		if fields["contentSHA256"] != wantDigest || fields["name"] != "original.mp4" {
+			t.Fatalf("backfilled manifest = %#v", fields)
+		}
+	}
+	path := filepath.Join(store.root, "assets", ids[0], "meta.json")
+	manifest, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(manifest, &fields); err != nil {
+		t.Fatal(err)
+	}
+	fields["contentSHA256"] = strings.ToUpper(wantDigest)
+	manifest, err = json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, manifest, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if asset, err := store.ReadAsset(ids[0]); err != nil || asset.ContentSHA256 != wantDigest {
+		t.Fatalf("uppercase digest = %+v, %v", asset, err)
+	}
+	fields["contentSHA256"] = "bad"
+	manifest, err = json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, manifest, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReadAsset(ids[0]); !errors.Is(err, ErrCorruptManifest) {
+		t.Fatalf("corrupt digest = %v", err)
+	}
+}
+
 func TestLocalRejectsInvalidIDsAndManifestPathTampering(t *testing.T) {
 	root := t.TempDir()
 	store, err := NewLocal(root)
@@ -95,6 +174,9 @@ func TestLocalRejectsInvalidIDsAndManifestPathTampering(t *testing.T) {
 		t.Run(id, func(t *testing.T) {
 			if _, err := store.SourcePath(id); !errors.Is(err, ErrInvalidID) {
 				t.Fatalf("SourcePath(%q) = %v", id, err)
+			}
+			if _, err := store.PosterPath(id); !errors.Is(err, ErrInvalidID) {
+				t.Fatalf("PosterPath(%q) = %v", id, err)
 			}
 			if _, err := store.ReadAsset(id); !errors.Is(err, ErrInvalidID) {
 				t.Fatalf("ReadAsset(%q) = %v", id, err)

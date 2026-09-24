@@ -141,6 +141,78 @@ func TestMixMissingAssetsAndDuration(t *testing.T) {
 	}
 }
 
+func TestMixCollapsesHistoricalDuplicateVideoIDs(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		audioDuration domain.DurationUS
+		shortage      domain.DurationUS
+	}{
+		{name: "insufficient after dedupe", audioDuration: 8_000_000, shortage: 3_000_000},
+		{name: "one source reaches planner", audioDuration: 4_000_000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, req := mixAssets(t, 5_000_000, tc.audioDuration)
+			original, err := store.ReadAsset(req.VideoIDs[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			duplicate := original
+			duplicate.ID = storage.NewAssetID()
+			duplicate.ContentSHA256 = "" // A historical manifest with no digest.
+			if err := store.SaveAsset(duplicate); err != nil {
+				t.Fatal(err)
+			}
+			path, err := store.SourcePath(duplicate.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("source"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			req.VideoIDs = []string{duplicate.ID, original.ID}
+			called := false
+			executor := executorFunc(func(ctx context.Context, plan domain.MixPlan, videos map[string]domain.Asset, audio domain.Asset, stage, output string) (media.OutputInfo, error) {
+				called = true
+				if len(videos) != 1 || videos[duplicate.ID].ID != duplicate.ID || len(plan.Clips) == 0 {
+					t.Fatalf("executor received duplicate videos: map=%+v plan=%+v", videos, plan)
+				}
+				for _, clip := range plan.Clips {
+					if clip.AssetID != duplicate.ID {
+						t.Fatalf("duplicate content in plan: %+v", plan)
+					}
+				}
+				return goodExecutor(t, nil)(ctx, plan, videos, audio, stage, output)
+			})
+			svc := NewMixService(store, executor, time.Second, 1, nil)
+			defer svc.Close()
+			meta, err := svc.Create(req)
+			if tc.shortage != 0 {
+				var shortage *InsufficientVideoError
+				if !errors.As(err, &shortage) || shortage.MissingDurationUS != tc.shortage || called {
+					t.Fatalf("shortage = %v; executor called = %v", err, called)
+				}
+				return
+			}
+			if err != nil || !called || !reflect.DeepEqual(meta.VideoIDs, []string{duplicate.ID}) {
+				t.Fatalf("deduped mix = %+v, %v; executor called = %v", meta, err, called)
+			}
+			stored, err := store.ReadMixMeta(meta.ID)
+			if err != nil || !reflect.DeepEqual(stored.VideoIDs, []string{duplicate.ID}) {
+				t.Fatalf("persisted meta = %+v, %v", stored, err)
+			}
+			plan, err := store.ReadMixPlan(meta.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, clip := range plan.Clips {
+				if clip.AssetID != duplicate.ID {
+					t.Fatalf("persisted plan uses second duplicate: %+v", plan)
+				}
+			}
+		})
+	}
+}
+
 func TestMixBusyTimeoutAndShutdown(t *testing.T) {
 	store, req := mixAssets(t, 12_000_000, 9_700_000)
 	started := make(chan struct{}, 1)

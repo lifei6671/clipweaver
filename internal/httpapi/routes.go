@@ -11,6 +11,8 @@ func Register(app *fiber.App, assets assetService, logger *slog.Logger) {
 	app.Post("/api/assets/videos", h.videos)
 	app.Post("/api/assets/audio", h.audio)
 	app.Get("/api/assets", h.list)
+	app.Delete("/api/assets/:id", h.deleteVideo)
+	app.Get("/api/assets/:id/poster", h.poster)
 }
 
 func RegisterMixes(app *fiber.App, mixes mixService, files mixFiles, logger *slog.Logger) {

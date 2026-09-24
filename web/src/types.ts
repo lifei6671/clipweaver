@@ -5,6 +5,7 @@ export type Asset = {
   durationUs: number;
   width: number;
   height: number;
+  posterUrl?: string;
 };
 
 export type VideoUploadItem =
